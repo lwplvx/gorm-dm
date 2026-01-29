@@ -9,7 +9,7 @@ import (
 	// 引入dm数据库驱动包
 	// _ "dm" // 引入dm数据库驱动包
 
-	_ "github.com/lwplvx/gormdm/dm8"
+	_ "github.com/lwplvx/gorm-dm/dm8"
 
 	"gorm.io/gorm" // 引入gorm v2包
 	"gorm.io/gorm/callbacks"

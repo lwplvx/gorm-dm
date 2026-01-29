@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	dm "github.com/lwplvx/gormdm/dm8"
+	dm "github.com/lwplvx/gorm-dm/dm8"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"

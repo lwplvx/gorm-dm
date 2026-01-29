@@ -1,4 +1,4 @@
-module github.com/lwplvx/gormdm
+module github.com/lwplvx/gorm-dm
 
 go 1.24.0
 
