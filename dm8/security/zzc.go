@@ -33,13 +33,13 @@ func (x *ecbEncrypter) BlockSize() int { return x.blockSize }
 
 func (x *ecbEncrypter) CryptBlocks(dst, src []byte) {
 	if len(src)%x.blockSize != 0 {
-		panic("github.com/lwplvx/gormdm/dm8/security: input not full blocks")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: input not full blocks")
 	}
 	if len(dst) < len(src) {
-		panic("github.com/lwplvx/gormdm/dm8/security: output smaller than input")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: output smaller than input")
 	}
 	if InexactOverlap(dst[:len(src)], src) {
-		panic("github.com/lwplvx/gormdm/dm8/security: invalid buffer overlap")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: invalid buffer overlap")
 	}
 	for bs, be := 0, x.blockSize; bs < len(src); bs, be = bs+x.blockSize, be+x.blockSize {
 		x.b.Encrypt(dst[bs:be], src[bs:be])
@@ -56,13 +56,13 @@ func (x *ecbDecrypter) BlockSize() int { return x.blockSize }
 
 func (x *ecbDecrypter) CryptBlocks(dst, src []byte) {
 	if len(src)%x.blockSize != 0 {
-		panic("github.com/lwplvx/gormdm/dm8/security: input not full blocks")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: input not full blocks")
 	}
 	if len(dst) < len(src) {
-		panic("github.com/lwplvx/gormdm/dm8/security: output smaller than input")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: output smaller than input")
 	}
 	if InexactOverlap(dst[:len(src)], src) {
-		panic("github.com/lwplvx/gormdm/dm8/security: invalid buffer overlap")
+		panic("github.com/lwplvx/gorm-dm/dm8/security: invalid buffer overlap")
 	}
 	for bs, be := 0, x.blockSize; bs < len(src); bs, be = bs+x.blockSize, be+x.blockSize {
 		x.b.Decrypt(dst[bs:be], src[bs:be])

@@ -13,7 +13,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/lwplvx/gormdm/dm8/util"
+	"github.com/lwplvx/gorm-dm/dm8/util"
 )
 
 const SQL_GET_DSC_EP_SITE = "SELECT " +

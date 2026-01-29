@@ -12,7 +12,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/lwplvx/gormdm/dm8/i18n"
+	"github.com/lwplvx/gorm-dm/dm8/i18n"
 )
 
 // 发版标记

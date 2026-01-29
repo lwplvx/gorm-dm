@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lwplvx/gormdm/dm8/security"
+	"github.com/lwplvx/gorm-dm/dm8/security"
 )
 
 const (

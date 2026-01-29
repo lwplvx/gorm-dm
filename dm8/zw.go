@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lwplvx/gormdm/dm8/util"
+	"github.com/lwplvx/gorm-dm/dm8/util"
 )
 
 var rwMap sync.Map
