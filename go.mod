@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/golang/snappy v1.0.0
 	golang.org/x/text v0.33.0
-	gorm.io/gorm v1.31.1
+	gorm.io/gorm v1.24.0
 )
 
 require (
