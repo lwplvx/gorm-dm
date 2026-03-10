@@ -526,7 +526,21 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 		onConflict.DoUpdates = clause.Set(withoutOnColumns)
 		if len(onConflict.DoUpdates) > 0 {
 			db.Statement.WriteString(" WHEN MATCHED THEN UPDATE SET ")
-			onConflict.DoUpdates.Build(db.Statement)
+			// onConflict.DoUpdates.Build(db.Statement)
+			// 修复dm8在更新语句中使用表达式时必须明确指定表名的问题（仅限更新语句字段在左边，且一个字段的情况）
+			// 自定义构建更新语句，确保列名都明确指定表名
+			for idx, assignment := range onConflict.DoUpdates {
+				if idx > 0 {
+					db.Statement.WriteByte(',')
+				}
+				db.Statement.WriteQuoted(assignment.Column)
+				db.Statement.WriteByte('=')
+				// 对于 dm8，在更新语句中使用表达式时必须明确指定表名
+				db.Statement.WriteQuoted("excluded")
+				db.Statement.WriteString(".")
+				db.Statement.AddVar(db.Statement, assignment.Value)
+			}
+
 		}
 	}
 
