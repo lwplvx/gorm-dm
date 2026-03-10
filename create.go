@@ -64,6 +64,10 @@ func Create(db *gorm.DB) {
 				} else {
 					hasConflict = false
 				}
+				// 满足冲突列条件DoNothing的情况
+				if len(onConflict.Columns) > 0 && onConflict.DoNothing {
+					hasConflict = true
+				}
 			}
 
 			if hasConflict {
@@ -503,11 +507,35 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	db.Statement.WriteString(") ON ")
 
 	var where clause.Where
-	for _, field := range db.Statement.Schema.PrimaryFields {
-		where.Exprs = append(where.Exprs, clause.Eq{
-			Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
-			Value:  clause.Column{Table: "excluded", Name: field.DBName},
-		})
+
+	// 满足冲突列条件DoNothing的情况
+	if len(onConflict.Columns) > 0 && onConflict.DoNothing {
+		for _, field := range onConflict.Columns {
+			where.Exprs = append(where.Exprs, clause.Eq{
+				Column: clause.Column{Table: db.Statement.Table, Name: field.Name},
+				Value:  clause.Column{Table: "excluded", Name: field.Name},
+			})
+		}
+	} else {
+		// 当只有DoUpdates时，检查是否有合适的列可以作为ON条件
+		// 合适的列是主键或唯一索引列
+		if len(onConflict.DoUpdates) > 0 {
+			// onConflict.Columns 有内容时，检查是否有合适的列可以作为ON条件
+			for _, field := range onConflict.Columns {
+				where.Exprs = append(where.Exprs, clause.Eq{
+					Column: clause.Column{Table: db.Statement.Table, Name: field.Name},
+					Value:  clause.Column{Table: "excluded", Name: field.Name},
+				})
+			}
+		} else {
+			// 没有DoUpdates时，默认使用主键作为ON条件
+			for _, field := range db.Statement.Schema.PrimaryFields {
+				where.Exprs = append(where.Exprs, clause.Eq{
+					Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+					Value:  clause.Column{Table: "excluded", Name: field.DBName},
+				})
+			}
+		}
 	}
 	where.Build(db.Statement)
 
