@@ -536,7 +536,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 				db.Statement.WriteQuoted(assignment.Column)
 				db.Statement.WriteByte('=')
 				// 对于 dm8，在更新语句中使用表达式时必须明确指定表名
-				db.Statement.WriteQuoted("excluded")
+				db.Statement.WriteQuoted(db.Statement.Table)
 				db.Statement.WriteString(".")
 				db.Statement.AddVar(db.Statement, assignment.Value)
 			}
