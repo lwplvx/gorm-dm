@@ -68,6 +68,12 @@ func Create(db *gorm.DB) {
 				if len(onConflict.Columns) > 0 && onConflict.DoNothing {
 					hasConflict = true
 				}
+				// 满足冲突列条件DoUpdates,且有唯一索引列的情况
+				// 前提是 model 中正确定义了唯一索引 例如 uniqueIndex:idx_uniq_key
+				indexs := db.Statement.Schema.ParseIndexes()
+				if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
+					hasConflict = true
+				}
 			}
 
 			if hasConflict {
@@ -517,15 +523,36 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 			})
 		}
 	} else {
-		// 当只有DoUpdates时，检查是否有合适的列可以作为ON条件
-		// 合适的列是主键或唯一索引列
-		if len(onConflict.DoUpdates) > 0 {
-			// onConflict.Columns 有内容时，检查是否有合适的列可以作为ON条件
-			for _, field := range onConflict.Columns {
-				where.Exprs = append(where.Exprs, clause.Eq{
-					Column: clause.Column{Table: db.Statement.Table, Name: field.Name},
-					Value:  clause.Column{Table: "excluded", Name: field.Name},
-				})
+		// 满足冲突列条件DoUpdates,且有唯一索引列的情况
+		// 前提是 model 中正确定义了唯一索引 例如 uniqueIndex:idx_uniq_key
+		indexs := db.Statement.Schema.ParseIndexes()
+		if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
+			// 查找唯一索引列作为ON条件
+			uniqueIndexColumns := make(map[string]bool)
+			for _, idx := range indexs {
+				if len(idx.Fields) > 0 {
+					// 收集唯一索引列
+					for _, field := range idx.Fields {
+						uniqueIndexColumns[field.DBName] = true
+					}
+					// 使用第一个唯一索引的所有列作为ON条件
+					for _, field := range idx.Fields {
+						where.Exprs = append(where.Exprs, clause.Eq{
+							Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+							Value:  clause.Column{Table: "excluded", Name: field.DBName},
+						})
+					}
+					break // 只使用第一个唯一索引
+				}
+			}
+			// 如果没有找到唯一索引，回退使用主键
+			if len(where.Exprs) == 0 {
+				for _, field := range db.Statement.Schema.PrimaryFields {
+					where.Exprs = append(where.Exprs, clause.Eq{
+						Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+						Value:  clause.Column{Table: "excluded", Name: field.DBName},
+					})
+				}
 			}
 		} else {
 			// 没有DoUpdates时，默认使用主键作为ON条件
