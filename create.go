@@ -514,6 +514,9 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 
 	var where clause.Where
 
+	// 记住使用的 ON 条件，后面 Update set 的时候排除掉
+	onConditionsColumns := make(map[string]bool)
+
 	// 满足冲突列条件DoNothing的情况
 	if len(onConflict.Columns) > 0 && onConflict.DoNothing {
 		for _, field := range onConflict.Columns {
@@ -525,6 +528,7 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 	} else {
 		// 满足冲突列条件DoUpdates,且有唯一索引列的情况
 		// 前提是 model 中正确定义了唯一索引 例如 uniqueIndex:idx_uniq_key
+
 		indexs := db.Statement.Schema.ParseIndexes()
 		if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
 			// 查找唯一索引列作为ON条件
@@ -534,6 +538,8 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 					// 收集唯一索引列
 					for _, field := range idx.Fields {
 						uniqueIndexColumns[field.DBName] = true
+						// 记录ON条件中使用的列
+						onConditionsColumns[field.DBName] = true
 					}
 					// 使用第一个唯一索引的所有列作为ON条件
 					for _, field := range idx.Fields {
@@ -542,12 +548,15 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 							Value:  clause.Column{Table: "excluded", Name: field.DBName},
 						})
 					}
+
 					break // 只使用第一个唯一索引
 				}
 			}
 			// 如果没有找到唯一索引，回退使用主键
 			if len(where.Exprs) == 0 {
 				for _, field := range db.Statement.Schema.PrimaryFields {
+					// 记录ON条件中使用的列
+					onConditionsColumns[field.DBName] = true
 					where.Exprs = append(where.Exprs, clause.Eq{
 						Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
 						Value:  clause.Column{Table: "excluded", Name: field.DBName},
@@ -584,16 +593,26 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 			// onConflict.DoUpdates.Build(db.Statement)
 			// 修复dm8在更新语句中使用表达式时必须明确指定表名的问题（仅限更新语句字段在左边，且一个字段的情况）
 			// 自定义构建更新语句，确保列名都明确指定表名
-			for idx, assignment := range onConflict.DoUpdates {
-				if idx > 0 {
+			// 变量，标记是否添加逗号
+			isAddComma := false
+
+			for _, assignment := range onConflict.DoUpdates {
+				// 列是匹配条件，匹配上说明值已经一样，达梦禁止重复更新
+				if onConditionsColumns[assignment.Column.Name] {
+					continue
+				}
+
+				if isAddComma {
 					db.Statement.WriteByte(',')
 				}
-				db.Statement.WriteQuoted(assignment.Column)
-				db.Statement.WriteByte('=')
+
 				// 对于 dm8，在更新语句中使用表达式时必须明确指定表名
 				db.Statement.WriteQuoted(db.Statement.Table)
 				db.Statement.WriteString(".")
+				db.Statement.WriteQuoted(assignment.Column)
+				db.Statement.WriteByte('=')
 				db.Statement.AddVar(db.Statement, assignment.Value)
+				isAddComma = true
 			}
 
 		}
