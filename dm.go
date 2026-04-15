@@ -81,6 +81,9 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	callbacks.RegisterDefaultCallbacks(db, callbackConfig)
 	db.Callback().Create().Replace("gorm:create", Create)
 
+	// 注册拦截器
+	InterceptSQL_toFix(db)
+
 	return
 }
 
