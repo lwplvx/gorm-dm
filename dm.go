@@ -4,6 +4,7 @@ package gormdm
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	// 引入dm数据库驱动包
@@ -81,8 +82,11 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	callbacks.RegisterDefaultCallbacks(db, callbackConfig)
 	db.Callback().Create().Replace("gorm:create", Create)
 
-	// 注册拦截器
-	InterceptSQL_toFix(db)
+	for k, v := range d.ClauseBuilders() {
+		if _, ok := db.ClauseBuilders[k]; !ok {
+			db.ClauseBuilders[k] = v
+		}
+	}
 
 	return
 }
@@ -282,4 +286,63 @@ func (d Dialector) SavePoint(tx *gorm.DB, name string) error {
 
 func (d Dialector) RollbackTo(tx *gorm.DB, name string) error {
 	return tx.Exec("ROLLBACK TO SAVEPOINT " + name).Error
+}
+
+// -----------------------------------------------------------------------------
+//
+//	构建子句：  ORDER BY  解决 Group by 别名问题
+//
+// -----------------------------------------------------------------------------
+func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
+
+	clauseBuilders := map[string]clause.ClauseBuilder{
+		"GROUP BY": func(c clause.Clause, builder clause.Builder) {
+			if values, ok := c.Expression.(clause.GroupBy); ok && len(values.Columns) > 0 {
+				groupByName := values.Columns[0].Name
+				// if values.Columns[0].Name == "ts" {
+				if stmt, ok := builder.(*gorm.Statement); ok {
+					if len(stmt.Selects) > 0 {
+						selectStr := stmt.Selects[0]
+						// 打印
+						// fmt.Println("ClauseBuilders 语句:", " 把 ts 替换为 FLOOR(time / 3600) * 3600")
+
+						if strings.Contains(selectStr, "AS "+groupByName) {
+							exprStr := extractExprByAlias(selectStr, groupByName)
+							builder.WriteString("GROUP BY " + exprStr)
+							return
+						}
+					}
+				}
+			}
+			c.Build(builder)
+		},
+	}
+
+	return clauseBuilders
+}
+
+// 提取 AS 别名前面的表达式
+func extractExprByAlias(selectStr string, alias string) string {
+	selectStr = strings.TrimSpace(selectStr)
+	alias = strings.TrimSpace(alias)
+
+	// 转义别名中的特殊字符
+	escapedAlias := regexp.QuoteMeta(alias)
+
+	// 最健壮正则：支持 大小写AS / 任意空格 / 无引号/反引号/双引号 别名
+	reg := regexp.MustCompile(
+		`^([\s\S]*?)\s+AS\s+` +
+			`(?:` +
+			"`" + escapedAlias + "`" +
+			`|"` + escapedAlias + `"` +
+			`|` + escapedAlias +
+			`)` +
+			`(?:\s|,|$)`,
+	)
+
+	match := reg.FindStringSubmatch(selectStr)
+	if len(match) >= 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return alias
 }
