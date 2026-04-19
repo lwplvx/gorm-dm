@@ -1,5 +1,5 @@
 // 本方言包基于gorm v1.24.2开发，需要配合达梦数据库驱动使用
-package gormdm
+package dameng
 
 import (
 	"database/sql"
@@ -295,17 +295,15 @@ func (d Dialector) RollbackTo(tx *gorm.DB, name string) error {
 // -----------------------------------------------------------------------------
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 
+	// 获取基本的子句构建器
 	clauseBuilders := map[string]clause.ClauseBuilder{
 		"GROUP BY": func(c clause.Clause, builder clause.Builder) {
 			if values, ok := c.Expression.(clause.GroupBy); ok && len(values.Columns) > 0 {
 				groupByName := values.Columns[0].Name
-				// if values.Columns[0].Name == "ts" {
+
 				if stmt, ok := builder.(*gorm.Statement); ok {
 					if len(stmt.Selects) > 0 {
 						selectStr := stmt.Selects[0]
-						// 打印
-						// fmt.Println("ClauseBuilders 语句:", " 把 ts 替换为 FLOOR(time / 3600) * 3600")
-
 						if strings.Contains(selectStr, "AS "+groupByName) {
 							exprStr := extractExprByAlias(selectStr, groupByName)
 							builder.WriteString("GROUP BY " + exprStr)
@@ -316,6 +314,11 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			}
 			c.Build(builder)
 		},
+	}
+
+	// 合并 JSON 子句构建器
+	for key, builder := range GetJSONClauseBuilders() {
+		clauseBuilders[key] = builder
 	}
 
 	return clauseBuilders

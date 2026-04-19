@@ -1,4 +1,4 @@
-package gormdm
+package dameng
 
 import (
 	"regexp"
