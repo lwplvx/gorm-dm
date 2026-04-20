@@ -290,7 +290,7 @@ func (d Dialector) RollbackTo(tx *gorm.DB, name string) error {
 
 // -----------------------------------------------------------------------------
 //
-//	构建子句：  ORDER BY  解决 Group by 别名问题
+//	构建子句：  ORDER BY  解决 Group by 别名问题，WHERE 解决json 函数问题
 //
 // -----------------------------------------------------------------------------
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {

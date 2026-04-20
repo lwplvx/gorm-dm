@@ -2,6 +2,7 @@ package dameng
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"unsafe"
 
@@ -157,6 +158,37 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 	return map[string]func(clause.Clause, clause.Builder){
 		"WHERE": func(c clause.Clause, builder clause.Builder) {
 			if values, ok := c.Expression.(clause.Where); ok && len(values.Exprs) > 0 {
+				// 检查是否有 JSON_CONTAINS 和 JSON_OBJECT, 有的话替换为达梦的语法
+				hasJSONFunctions := false
+				for _, expr := range values.Exprs {
+					if checkJSONFunctions(expr) {
+						hasJSONFunctions = true
+						break
+					}
+				}
+
+				// 如果包含 JSON 函数，先构建原始 SQL 再转换
+				if hasJSONFunctions {
+					// 检查是否是 gorm.Statement
+					stmt, ok := builder.(*gorm.Statement)
+					if !ok {
+						c.Build(builder)
+						return
+					}
+					// 构建原始 SQL
+					c.Build(builder)
+					// 获取原始 SQL
+					originalSQL := stmt.SQL.String()
+					// 转换 JSON 函数
+					convertedSQL := JSON_OBJECTConvertToDameng(originalSQL)
+					// 如果转换后的 SQL 不同，更新它
+					if convertedSQL != originalSQL {
+						stmt.SQL.Reset()
+						stmt.SQL.WriteString(convertedSQL)
+					}
+					return
+				}
+
 				hasJSONArray := false
 
 				// 递归检查是否有 JSONArrayExpression，支持嵌套的 AND/OR 条件
@@ -256,4 +288,81 @@ func buildExpression(builder clause.Builder, expr clause.Expression, isTopLevel 
 		// 其他表达式使用默认构建
 		expr.Build(builder)
 	}
+}
+
+// 使用反射检查表达式是否包含原始 SQL
+func checkJSONFunctions(expr clause.Expression) bool {
+	// 检查表达式类型
+	switch e := expr.(type) {
+	case clause.Expr:
+		// 检查原始 SQL 是否包含 JSON 函数
+		if strings.Contains(e.SQL, "JSON_CONTAINS") && strings.Contains(e.SQL, "JSON_OBJECT") {
+			return true
+		}
+	case clause.AndConditions:
+		for _, andExpr := range e.Exprs {
+			if checkJSONFunctions(andExpr) {
+				return true
+			}
+		}
+	case clause.OrConditions:
+		for _, orExpr := range e.Exprs {
+			if checkJSONFunctions(orExpr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// 把 MySQL JSON 查询语句 转换成 达梦 DM 语句
+// func ConvertJSON_OBJECTSqlToDM(mysqlSQL string) string {
+// 	// ------------------------------------------------------
+// 	// 规则1：转换 JSON_CONTAINS(COALESCE(col, '[]'), '["value"]')
+// 	// 适用：san、dns、域名数组包含判断
+// 	// 支持带引号的列名和具体的 JSON 值
+// 	// ------------------------------------------------------
+// 	re1 := regexp.MustCompile(`JSON_CONTAINS\(COALESCE\(([\w\"]+), '\[\]'\), '\["([^"]+)"\]'\)`)
+// 	dmSQL := re1.ReplaceAllStringFunc(mysqlSQL, func(s string) string {
+// 		match := re1.FindStringSubmatch(s)
+// 		col := match[1]
+// 		value := match[2]
+// 		// DM 数组包含等价写法
+// 		return "INSTR(" + col + ", '\"" + value + "\"') > 0"
+// 	})
+
+// 	// ------------------------------------------------------
+// 	// 规则3：转换 JSON_CONTAINS(col, '["value"]')
+// 	// 适用：简单的数组包含判断
+// 	// ------------------------------------------------------
+// 	re3 := regexp.MustCompile(`JSON_CONTAINS\(([\w\"]+), '\["([^"]+)"\]'\)`)
+// 	dmSQL = re3.ReplaceAllStringFunc(dmSQL, func(s string) string {
+// 		match := re3.FindStringSubmatch(s)
+// 		col := match[1]
+// 		value := match[2]
+// 		// DM 数组包含等价写法
+// 		return "INSTR(" + col + ", '\"" + value + "\"') > 0"
+// 	})
+
+// 	return dmSQL
+// }
+
+var regJSON_OBJECT = regexp.MustCompile(`JSON_CONTAINS\(([\w\"]+), JSON_OBJECT\('([^']+)', \?, '([^']+)', \?\)\)`)
+
+// JSON_OBJECTConvertToDameng 将 MySQL JSON_OBJECT 语法转为达梦兼容 SQL
+func JSON_OBJECTConvertToDameng(sql string) string {
+
+	// ------------------------------------------------------
+	// 规则：转换 JSON_CONTAINS(col, JSON_OBJECT('k1', ?, 'k2', ?))
+	// 适用：attributes 多键值匹配
+	// ------------------------------------------------------
+	dmSQL := regJSON_OBJECT.ReplaceAllStringFunc(sql, func(s string) string {
+		match := regJSON_OBJECT.FindStringSubmatch(s)
+		col := match[1]
+		k1 := match[2]
+		k2 := match[3]
+		// DM 标准 JSON_VALUE 写法
+		return "JSON_VALUE(" + col + ", '$." + k1 + "') = ? AND JSON_VALUE(" + col + ", '$." + k2 + "') = ?"
+	})
+	return dmSQL
 }
