@@ -341,6 +341,11 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 		},
 	}
 
+	// 合并 JSON 子句构建器
+	for key, builder := range GetJSONClauseBuilders() {
+		clauseBuilders[key] = builder
+	}
+
 	return clauseBuilders
 }
 func getSerialDatabaseType(s string) (dbType string, ok bool) {
