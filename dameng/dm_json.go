@@ -244,6 +244,9 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 			}
 			// 默认处理
 			c.Build(builder)
+
+			// mysql to dameng sql 替换
+			replaceMysqlSqlToDMSql(builder)
 		},
 	}
 }
@@ -362,4 +365,35 @@ func ConvertJSON_OBJECTToDamengSql(sql string) string {
 		// 返回达梦格式
 		return `JSON_CONTAINS(` + field + `, '` + jsonStr + `')`
 	})
+}
+
+// 预编译正则
+var backtickPairRegex = regexp.MustCompile("`([^`]*)`")
+
+// ConvertMySQLQuotesToDamengSafe
+// 安全替换：只处理成对出现的 `xxx` → "xxx"
+func ConvertMySQLQuotesToDamengSafe(sql string) string {
+	return backtickPairRegex.ReplaceAllStringFunc(sql, func(match string) string {
+		return `"` + strings.Trim(match, "`") + `"`
+	})
+}
+
+// 替换 mysql 写法到达梦写法
+func replaceMysqlSqlToDMSql(builder clause.Builder) {
+	// 检查是否是 gorm.Statement
+	stmt, ok := builder.(*gorm.Statement)
+	if !ok {
+		return
+	}
+
+	// 获取原始 SQL
+	originalSQL := stmt.SQL.String()
+	// 如果语句包含 mysql 的字段单引号 ``，则替换为达梦的双引号 ""，确保引号成对出现
+	convertedSQL := ConvertMySQLQuotesToDamengSafe(originalSQL)
+
+	// 如果转换后的 SQL 不同，更新它
+	if convertedSQL != originalSQL {
+		stmt.SQL.Reset()
+		stmt.SQL.WriteString(convertedSQL)
+	}
 }
