@@ -180,7 +180,7 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 					// 获取原始 SQL
 					originalSQL := stmt.SQL.String()
 					// 转换 JSON 函数
-					convertedSQL := JSON_OBJECTConvertToDameng(originalSQL)
+					convertedSQL := ConvertJSON_OBJECTToDamengSql(originalSQL)
 					// 如果转换后的 SQL 不同，更新它
 					if convertedSQL != originalSQL {
 						stmt.SQL.Reset()
@@ -315,54 +315,51 @@ func checkJSONFunctions(expr clause.Expression) bool {
 	return false
 }
 
-// 把 MySQL JSON 查询语句 转换成 达梦 DM 语句
-// func ConvertJSON_OBJECTSqlToDM(mysqlSQL string) string {
-// 	// ------------------------------------------------------
-// 	// 规则1：转换 JSON_CONTAINS(COALESCE(col, '[]'), '["value"]')
-// 	// 适用：san、dns、域名数组包含判断
-// 	// 支持带引号的列名和具体的 JSON 值
-// 	// ------------------------------------------------------
-// 	re1 := regexp.MustCompile(`JSON_CONTAINS\(COALESCE\(([\w\"]+), '\[\]'\), '\["([^"]+)"\]'\)`)
-// 	dmSQL := re1.ReplaceAllStringFunc(mysqlSQL, func(s string) string {
-// 		match := re1.FindStringSubmatch(s)
-// 		col := match[1]
-// 		value := match[2]
-// 		// DM 数组包含等价写法
-// 		return "INSTR(" + col + ", '\"" + value + "\"') > 0"
-// 	})
+// 预编译正则表达式，性能更高
+var mysqlJSONContainsRegex = regexp.MustCompile(
+	`JSON_CONTAINS\s*\(\s*([^,]+?)\s*,\s*JSON_OBJECT\s*\(\s*(.+?)\s*\)\s*\)`,
+)
 
-// 	// ------------------------------------------------------
-// 	// 规则3：转换 JSON_CONTAINS(col, '["value"]')
-// 	// 适用：简单的数组包含判断
-// 	// ------------------------------------------------------
-// 	re3 := regexp.MustCompile(`JSON_CONTAINS\(([\w\"]+), '\["([^"]+)"\]'\)`)
-// 	dmSQL = re3.ReplaceAllStringFunc(dmSQL, func(s string) string {
-// 		match := re3.FindStringSubmatch(s)
-// 		col := match[1]
-// 		value := match[2]
-// 		// DM 数组包含等价写法
-// 		return "INSTR(" + col + ", '\"" + value + "\"') > 0"
-// 	})
+// 将 MySQL 的 JSON_CONTAINS + JSON_OBJECT 语法 转换为 达梦数据库兼容语法
+// 例如：
+// 输入: JSON_CONTAINS(col, JSON_OBJECT('Label', '50000000'))
+// 输出: JSON_CONTAINS(col, '{"Label":"50000000"}')
+func ConvertJSON_OBJECTToDamengSql(sql string) string {
+	if sql == "" {
+		return sql
+	}
+	// 替换所有匹配的 JSON_CONTAINS 表达式
+	return mysqlJSONContainsRegex.ReplaceAllStringFunc(sql, func(matchStr string) string {
+		// 提取分组：分组1=字段名，分组2=JSON_OBJECT内部的 key,value,key,value...
+		parts := mysqlJSONContainsRegex.FindStringSubmatch(matchStr)
+		if len(parts) < 3 {
+			return matchStr // 匹配失败，原样返回
+		}
 
-// 	return dmSQL
-// }
+		field := strings.TrimSpace(parts[1])
+		paramsStr := strings.TrimSpace(parts[2])
 
-var regJSON_OBJECT = regexp.MustCompile(`JSON_CONTAINS\(([\w\"]+), JSON_OBJECT\('([^']+)', \?, '([^']+)', \?\)\)`)
+		// 按逗号分割参数
+		params := strings.Split(paramsStr, ",")
+		// 去除每个参数前后空格和引号
+		for i := range params {
+			params[i] = strings.TrimSpace(params[i])
+			params[i] = strings.Trim(params[i], `'"`) // 去掉单/双引号
+		}
 
-// JSON_OBJECTConvertToDameng 将 MySQL JSON_OBJECT 语法转为达梦兼容 SQL
-func JSON_OBJECTConvertToDameng(sql string) string {
+		// 组装成 {"key":"value", ...}
+		var jsonKV []string
+		for i := 0; i < len(params); i += 2 {
+			if i+1 >= len(params) {
+				break
+			}
+			key := params[i]
+			val := params[i+1]
+			jsonKV = append(jsonKV, `"`+key+`":"`+val+`"`)
+		}
+		jsonStr := "{" + strings.Join(jsonKV, ",") + "}"
 
-	// ------------------------------------------------------
-	// 规则：转换 JSON_CONTAINS(col, JSON_OBJECT('k1', ?, 'k2', ?))
-	// 适用：attributes 多键值匹配
-	// ------------------------------------------------------
-	dmSQL := regJSON_OBJECT.ReplaceAllStringFunc(sql, func(s string) string {
-		match := regJSON_OBJECT.FindStringSubmatch(s)
-		col := match[1]
-		k1 := match[2]
-		k2 := match[3]
-		// DM 标准 JSON_VALUE 写法
-		return "JSON_VALUE(" + col + ", '$." + k1 + "') = ? AND JSON_VALUE(" + col + ", '$." + k2 + "') = ?"
+		// 返回达梦格式
+		return `JSON_CONTAINS(` + field + `, '` + jsonStr + `')`
 	})
-	return dmSQL
 }
