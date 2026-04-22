@@ -248,6 +248,13 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 			// mysql to dameng sql 替换
 			replaceMysqlSqlToDMSql(builder)
 		},
+		"ORDER BY": func(c clause.Clause, builder clause.Builder) {
+			// 默认处理
+			c.Build(builder)
+
+			// mysql to dameng sql 替换
+			replaceMysqlSqlToDMSql(builder)
+		},
 	}
 }
 
