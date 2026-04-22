@@ -45,7 +45,7 @@ func New(config Config) gorm.Dialector {
 }
 
 func (dialector Dialector) Name() string {
-	return "gaussdb"
+	return "panwei"
 }
 
 func (dialector Dialector) Apply(config *gorm.Config) error {
