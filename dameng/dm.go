@@ -4,6 +4,7 @@ package dameng
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -111,8 +112,49 @@ func (d Dialector) Migrator(db *gorm.DB) gorm.Migrator {
 	}
 }
 
+type JsonTextFieldOfTableConfig struct {
+	TableName         string
+	FieldTypeNameFlag string
+}
+
+func (d Dialector) handleJSONFieldValue(stmt *gorm.Statement, v interface{}) {
+
+	// JsonTextFieldOfTableMap 定义表名与JSON字段名的键值对列表
+	JsonTextFieldOfTableMap := []JsonTextFieldOfTableConfig{
+		{"stages", ".JSON"},      // stages表的JSON字段
+		{"stage_jsons", ".JSON"}, // stage_jsons表的JSON字段
+	}
+
+	for _, vmap := range JsonTextFieldOfTableMap {
+		tbl_name := vmap.TableName
+		type_name_flag := vmap.FieldTypeNameFlag
+		if stmt.Table == tbl_name || stmt.Table == `"`+tbl_name+`"` {
+			// 2. 获取【参数值真实类型的名称】
+			typ := reflect.TypeOf(v)
+			typeName := typ.String()
+			// 3. 类型名称包含  配置的标记名称
+			if strings.Contains(typeName, type_name_flag) {
+				// 当前参数值 替换为 string，实现达梦不存字节码
+				if len(stmt.Vars) > 0 {
+					switch rv := reflect.ValueOf(v); rv.Kind() {
+					case reflect.Slice, reflect.Array:
+						{
+							stmt.Vars[len(stmt.Vars)-1] = string(rv.Bytes())
+						}
+					}
+				}
+			}
+		}
+
+	}
+
+}
+
 func (d Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v interface{}) {
 	writer.WriteByte('?')
+
+	// 处理JSON字段的参数值转换
+	d.handleJSONFieldValue(stmt, v)
 }
 
 func (d Dialector) QuoteTo(writer clause.Writer, str string) {
