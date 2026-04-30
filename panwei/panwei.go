@@ -37,7 +37,10 @@ var (
 )
 
 func Open(dsn string) gorm.Dialector {
-	return &Dialector{&Config{DSN: dsn}}
+	config := &Config{DSN: dsn}
+	// config.PreferSimpleProtocol = true
+	// config.WithoutReturning = true
+	return &Dialector{config}
 }
 
 func New(config Config) gorm.Dialector {
@@ -110,6 +113,10 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 			db.ClauseBuilders[k] = v
 		}
 	}
+
+	// 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
+	extendCreateCallback(db)
+
 	return
 }
 
@@ -288,6 +295,19 @@ const (
 
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	clauseBuilders := map[string]clause.ClauseBuilder{
+		"RETURNING": func(c clause.Clause, builder clause.Builder) {
+			// 检查是否是 INSERT ON DUPLICATE KEY UPDATE 语句
+			// 如果是，我们已经在 ClauseOnConflict 中处理了 ID 获取，所以这里直接返回
+			stmt := builder.(*gorm.Statement)
+			for _, cl := range stmt.Clauses {
+				if cl.Name == "ON CONFLICT" {
+					return
+				}
+			}
+			// 否则，正常处理 RETURNING 子句
+			c.Build(builder)
+		},
+
 		ClauseOnConflict: func(c clause.Clause, builder clause.Builder) {
 			onConflict, ok := c.Expression.(clause.OnConflict)
 			if !ok {
@@ -338,6 +358,8 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			if !hasWritten {
 				builder.WriteString("ON DUPLICATE KEY UPDATE NOTHING")
 			}
+			// 不添加 RETURNING 子句，因为 Panwei 数据库不支持在 INSERT ON DUPLICATE KEY UPDATE 语句中使用 RETURNING 子句
+			// 而是在 replaceCreateCallback 函数中通过额外的 SELECT 语句获取自增 ID
 		},
 	}
 
@@ -374,4 +396,53 @@ func isPrimaryOrUniqueKey(builder clause.Builder, name string) bool {
 		}
 	}
 	return false
+}
+
+// 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
+func extendCreateCallback(db *gorm.DB) {
+	// 保存原始的 Create 回调函数
+	originalCreate := db.Callback().Create().Get("gorm:create")
+	if originalCreate == nil {
+		return
+	}
+
+	// 注册新的 Create 回调函数
+	db.Callback().Create().Replace("gorm:create", func(db *gorm.DB) {
+		// 执行原始的 Create 回调函数
+		originalCreate(db)
+
+		// 如果有错误，直接返回
+		if db.Error != nil {
+			return
+		}
+
+		// 检查是否使用了 INSERT ON DUPLICATE KEY UPDATE 语句
+		if _, ok := db.Statement.Clauses["ON CONFLICT"]; ok {
+
+			// 检查是否有自增主键
+			if db.Statement.Schema != nil && db.Statement.Schema.PrioritizedPrimaryField != nil && db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement {
+				// 构建查询最新 ID 的 SQL 语句
+				var id interface{}
+
+				queryBuilder := strings.Builder{}
+				// merge into
+				if db.Statement.Schema.PrioritizedPrimaryField != nil && db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement {
+					queryBuilder.WriteString("SELECT ")
+					queryBuilder.WriteString(db.Statement.Quote(db.Statement.Schema.PrioritizedPrimaryField.DBName))
+					queryBuilder.WriteString(" FROM ")
+					queryBuilder.WriteString(db.Statement.Quote(db.Statement.Table))
+					queryBuilder.WriteString(" ORDER BY ")
+					queryBuilder.WriteString(db.Statement.Quote(db.Statement.Schema.PrioritizedPrimaryField.DBName))
+					queryBuilder.WriteString(" DESC LIMIT 1")
+				}
+				query := queryBuilder.String()
+
+				// 直接使用 ConnPool 执行查询，避免参数复用问题
+				if err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, query).Scan(&id); err == nil {
+					// 将获取到的 ID 回填到结构体中
+					db.Statement.Schema.PrioritizedPrimaryField.Set(db.Statement.Context, db.Statement.ReflectValue, id)
+				}
+			}
+		}
+	})
 }
