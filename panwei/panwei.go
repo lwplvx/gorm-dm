@@ -38,7 +38,7 @@ var (
 
 func Open(dsn string) gorm.Dialector {
 	config := &Config{DSN: dsn}
-	// config.PreferSimpleProtocol = true
+	config.PreferSimpleProtocol = true
 	// config.WithoutReturning = true
 	return &Dialector{config}
 }
