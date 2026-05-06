@@ -42,9 +42,21 @@ func processFixedVersionSql(sql string) string {
 	// 替换 2：."latest_version" = latest_version + 1 → ."latest_version" = "excluded"."latest_version"+ 1
 	sql = regLatestVersion.ReplaceAllString(sql, `${1}"excluded"."latest_version" + 1`)
 
+	// 替换 3："services"."services"."lbcluster_name" = "test-lbcluster_name" → "services"."lbcluster_name" = "test-lbcluster_name"
+	// sql = replaceDoubleServicesTableNameSql(sql)
+
 	// fmt.Println("新的 SQL :", sql)
 
 	return sql
+}
+
+// 匹配 "services".services."lbcluster_name" = 替换为 "services"."lbcluster_name" =
+// 匹配 "services"."services"."lbcluster_name" = 或 "services".services."lbcluster_name" = 格式，修复表名重复问题
+var regDoubleServicesLbclusterName = regexp.MustCompile(`"services"\.(?:services|\"services\")\."lbcluster_name"\s*=\s*`)
+
+// replaceDoubleLbclusterNameSql 替换 WHERE 子句中重复的 "services" 表名前缀
+func replaceDoubleServicesTableNameSql(sql string) string {
+	return regDoubleServicesLbclusterName.ReplaceAllString(sql, `"services"."lbcluster_name" =`)
 }
 
 func convertToFixSql(tx *gorm.DB) {

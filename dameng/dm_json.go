@@ -83,73 +83,6 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 	}
 }
 
-// // 递归构建表达式
-// func buildExpression(builder clause.Builder, expr clause.Expression, isTopLevel bool) {
-
-// 	// 处理 JSONArrayExpression
-// 	if jsonArrExpr, ok := expr.(*datatypes.JSONArrayExpression); ok {
-// 		BuildJSONArrayExpression(builder, jsonArrExpr)
-// 	} else if andConditions, ok := expr.(clause.AndConditions); ok {
-// 		// 处理 AND 条件
-// 		if isTopLevel {
-// 			builder.WriteString(" ( ")
-// 		}
-
-// 		for _j, andExpr := range andConditions.Exprs {
-// 			if _j > 0 {
-// 				// 检查是否为 AND 条件
-// 				if _, ok := andExpr.(clause.AndConditions); ok {
-// 					builder.WriteString(" AND ")
-// 				} else if _, ok := andExpr.(clause.OrConditions); ok {
-// 					builder.WriteString(" OR ")
-// 				} else {
-// 					builder.WriteString(" AND ")
-// 				}
-// 			}
-
-// 			buildExpression(builder, andExpr, false)
-// 		}
-// 		if isTopLevel {
-// 			builder.WriteString(" ) ")
-// 		}
-
-// 	} else if orConditions, ok := expr.(clause.OrConditions); ok {
-// 		// 处理 OR 条件
-// 		for _, orExpr := range orConditions.Exprs {
-// 			buildExpression(builder, orExpr, false)
-// 		}
-
-// 	} else {
-// 		// 其他表达式使用默认构建
-// 		expr.Build(builder)
-// 	}
-// }
-
-// // 使用反射检查表达式是否包含原始 SQL
-// func checkJSONFunctions(expr clause.Expression) bool {
-// 	// 检查表达式类型
-// 	switch e := expr.(type) {
-// 	case clause.Expr:
-// 		// 检查原始 SQL 是否包含 JSON 函数
-// 		if strings.Contains(e.SQL, "JSON_CONTAINS") && strings.Contains(e.SQL, "JSON_OBJECT") {
-// 			return true
-// 		}
-// 	case clause.AndConditions:
-// 		for _, andExpr := range e.Exprs {
-// 			if checkJSONFunctions(andExpr) {
-// 				return true
-// 			}
-// 		}
-// 	case clause.OrConditions:
-// 		for _, orExpr := range e.Exprs {
-// 			if checkJSONFunctions(orExpr) {
-// 				return true
-// 			}
-// 		}
-// 	}
-// 	return false
-// }
-
 // 预编译正则表达式，性能更高
 var mysqlJSONContainsRegex = regexp.MustCompile(
 	`JSON_CONTAINS\s*\(\s*([^,]+?)\s*,\s*JSON_OBJECT\s*\(\s*(.+?)\s*\)\s*\)`,
@@ -225,6 +158,9 @@ func replaceMysqlSqlToDMSql(builder clause.Builder) {
 
 	// 转换 JSON 函数
 	convertedSQL = ConvertJSON_OBJECTToDamengSql(convertedSQL)
+
+	// 替换 3："services"."services"."lbcluster_name" = "test-lbcluster_name" → "services"."lbcluster_name" = "test-lbcluster_name"
+	convertedSQL = replaceDoubleServicesTableNameSql(convertedSQL)
 
 	// 如果转换后的 SQL 不同，更新它
 	if convertedSQL != originalSQL {
