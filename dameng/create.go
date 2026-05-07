@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 type multiRows struct {
@@ -64,6 +65,7 @@ func Create(db *gorm.DB) {
 				} else {
 					hasConflict = false
 				}
+
 				// 满足冲突列条件DoNothing的情况
 				if len(onConflict.Columns) > 0 && onConflict.DoNothing {
 					hasConflict = true
@@ -72,8 +74,17 @@ func Create(db *gorm.DB) {
 				// 前提是 model 中正确定义了唯一索引 例如 uniqueIndex:idx_uniq_key
 				indexs := db.Statement.Schema.ParseIndexes()
 				if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
-					hasConflict = true
+					// 判断是否有唯一索引
+					for _, idx := range indexs {
+						for _, field := range idx.Fields {
+							if IsUniqueIndex(field) {
+								hasConflict = true
+								break
+							}
+						}
+					}
 				}
+
 			}
 
 			if hasConflict {
@@ -220,6 +231,17 @@ func Create(db *gorm.DB) {
 		}
 	}
 
+}
+
+// IsUniqueIndex 安全判断 IndexOption 是否为唯一索引
+func IsUniqueIndex(idx schema.IndexOption) bool {
+
+	if idx.Unique || (len(idx.UniqueIndex) > 0) {
+		return true
+	}
+	// 这里你要的：安全使用 len() 判断 tag 内容
+	uniqueTag, ok := idx.TagSettings["UNIQUEINDEX"]
+	return ok && len(uniqueTag) > 0
 }
 
 /*
@@ -534,23 +556,37 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 		// 前提是 model 中正确定义了唯一索引 例如 uniqueIndex:idx_uniq_key
 
 		indexs := db.Statement.Schema.ParseIndexes()
-		if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
+
+		if len(onConflict.Columns) > 0 {
+			for _, field := range onConflict.Columns {
+				// 记录ON条件中使用的列
+				onConditionsColumns[field.Name] = true
+				where.Exprs = append(where.Exprs, clause.Eq{
+					Column: clause.Column{Table: db.Statement.Table, Name: field.Name},
+					Value:  clause.Column{Table: "excluded", Name: field.Name},
+				})
+			}
+		} else if len(onConflict.DoUpdates) > 0 && len(indexs) > 0 {
 			// 查找唯一索引列作为ON条件
 			uniqueIndexColumns := make(map[string]bool)
 			for _, idx := range indexs {
 				if len(idx.Fields) > 0 {
 					// 收集唯一索引列
 					for _, field := range idx.Fields {
-						uniqueIndexColumns[field.DBName] = true
-						// 记录ON条件中使用的列
-						onConditionsColumns[field.DBName] = true
+						if IsUniqueIndex(field) {
+							uniqueIndexColumns[field.DBName] = true
+							// 记录ON条件中使用的列
+							onConditionsColumns[field.DBName] = true
+						}
 					}
 					// 使用第一个唯一索引的所有列作为ON条件
 					for _, field := range idx.Fields {
-						where.Exprs = append(where.Exprs, clause.Eq{
-							Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
-							Value:  clause.Column{Table: "excluded", Name: field.DBName},
-						})
+						if IsUniqueIndex(field) {
+							where.Exprs = append(where.Exprs, clause.Eq{
+								Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+								Value:  clause.Column{Table: "excluded", Name: field.DBName},
+							})
+						}
 					}
 
 					break // 只使用第一个唯一索引
@@ -558,18 +594,31 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 			}
 			// 如果没有找到唯一索引，回退使用主键
 			if len(where.Exprs) == 0 {
-				for _, field := range db.Statement.Schema.PrimaryFields {
-					// 记录ON条件中使用的列
-					onConditionsColumns[field.DBName] = true
-					where.Exprs = append(where.Exprs, clause.Eq{
-						Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
-						Value:  clause.Column{Table: "excluded", Name: field.DBName},
-					})
+				if len(onConflict.Columns) > 0 {
+					for _, field := range onConflict.Columns {
+						onConditionsColumns[field.Name] = true
+						where.Exprs = append(where.Exprs, clause.Eq{
+							Column: clause.Column{Table: db.Statement.Table, Name: field.Name},
+							Value:  clause.Column{Table: "excluded", Name: field.Name},
+						})
+					}
+				} else {
+					for _, field := range db.Statement.Schema.PrimaryFields {
+						// 记录ON条件中使用的列
+						onConditionsColumns[field.DBName] = true
+						where.Exprs = append(where.Exprs, clause.Eq{
+							Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
+							Value:  clause.Column{Table: "excluded", Name: field.DBName},
+						})
+					}
+
 				}
 			}
 		} else {
-			// 没有DoUpdates时，默认使用主键作为ON条件
+			// 没有DoUpdates 和 onConflict.Columns 时，默认使用主键作为ON条件
 			for _, field := range db.Statement.Schema.PrimaryFields {
+				// 记录ON条件中使用的列
+				onConditionsColumns[field.DBName] = true
 				where.Exprs = append(where.Exprs, clause.Eq{
 					Column: clause.Column{Table: db.Statement.Table, Name: field.DBName},
 					Value:  clause.Column{Table: "excluded", Name: field.DBName},

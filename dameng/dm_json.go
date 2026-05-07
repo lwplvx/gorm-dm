@@ -159,9 +159,6 @@ func replaceMysqlSqlToDMSql(builder clause.Builder) {
 	// 转换 JSON 函数
 	convertedSQL = ConvertJSON_OBJECTToDamengSql(convertedSQL)
 
-	// 替换 3："services"."services"."lbcluster_name" = "test-lbcluster_name" → "services"."lbcluster_name" = "test-lbcluster_name"
-	convertedSQL = replaceDoubleServicesTableNameSql(convertedSQL)
-
 	// 如果转换后的 SQL 不同，更新它
 	if convertedSQL != originalSQL {
 		stmt.SQL.Reset()
