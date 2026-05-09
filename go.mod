@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/HuaweiCloudDeveloper/gaussdb-go v1.0.0-rc1
 	github.com/golang/snappy v1.0.0
+	github.com/jackc/pgx/v5 v5.5.5
 	golang.org/x/text v0.33.0
 	gorm.io/datatypes v1.2.7
 	gorm.io/driver/mysql v1.6.0

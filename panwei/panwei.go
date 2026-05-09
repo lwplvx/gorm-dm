@@ -3,13 +3,17 @@ package panwei
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
-	gaussdbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
+	// panweidbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
+	// "github.com/HuaweiCloudDeveloper/gaussdb-go/stdlib"
 
-	"github.com/HuaweiCloudDeveloper/gaussdb-go/stdlib"
+	panweidbgo "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -93,14 +97,15 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	} else if dialector.DriverName != "" {
 		db.ConnPool, err = sql.Open(dialector.DriverName, dialector.Config.DSN)
 	} else {
-		var config *gaussdbgo.ConnConfig
+		var config *panweidbgo.ConnConfig
 
-		config, err = gaussdbgo.ParseConfig(dialector.Config.DSN)
+		config, err = panweidbgo.ParseConfig(dialector.Config.DSN)
 		if err != nil {
 			return
 		}
 		if dialector.Config.PreferSimpleProtocol {
-			config.DefaultQueryExecMode = gaussdbgo.QueryExecModeSimpleProtocol
+			// 代理/兼容场景 适合这种模式
+			config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
 		}
 		result := timeZoneMatcher.FindStringSubmatch(dialector.Config.DSN)
 		if len(result) > 2 {
@@ -138,7 +143,7 @@ func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement,
 	varLen := len(stmt.Vars)
 	if varLen > 0 {
 		switch stmt.Vars[0].(type) {
-		case gaussdbgo.QueryExecMode:
+		case panweidbgo.QueryExecMode:
 			index++
 		}
 	}
@@ -440,7 +445,15 @@ func extendCreateCallback(db *gorm.DB) {
 				// 直接使用 ConnPool 执行查询，避免参数复用问题
 				if err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, query).Scan(&id); err == nil {
 					// 将获取到的 ID 回填到结构体中
-					db.Statement.Schema.PrioritizedPrimaryField.Set(db.Statement.Context, db.Statement.ReflectValue, id)
+					// 修复：判断不是切片/数组，才执行主键ID赋值
+					// 切片是关联数据，没有主键ID，必须跳过
+					if field := db.Statement.Schema.PrioritizedPrimaryField; field != nil && db.Statement.ReflectValue.IsValid() {
+						// 修复：跳过切片、数组，避免 panic
+						kind := db.Statement.ReflectValue.Kind()
+						if kind != reflect.Slice && kind != reflect.Array {
+							field.Set(db.Statement.Context, db.Statement.ReflectValue, id)
+						}
+					}
 				}
 			}
 		}
