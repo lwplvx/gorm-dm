@@ -11,8 +11,8 @@ import (
 	// panweidbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
 	// "github.com/HuaweiCloudDeveloper/gaussdb-go/stdlib"
 
-	panweidbgo "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
+	panweidbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
+	"github.com/lwplvx/gorm-dm/panwei/gaussdb-go/stdlib"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
