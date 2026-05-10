@@ -480,7 +480,11 @@ func extendCreateCallback(db *gorm.DB) {
 						// 修复：跳过切片、数组，避免 panic
 						kind := db.Statement.ReflectValue.Kind()
 						if kind != reflect.Slice && kind != reflect.Array {
-							field.Set(db.Statement.Context, db.Statement.ReflectValue, id)
+							// 获取可寻址的元素
+							rv := db.Statement.ReflectValue
+							if rv.CanAddr() { // 必须可寻址才能 Set
+								field.Set(db.Statement.Context, rv, id)
+							}
 						}
 					}
 				}
