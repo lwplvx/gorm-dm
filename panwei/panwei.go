@@ -213,6 +213,8 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
 		return "boolean"
+		//  使用 smallint 替代,保证业务之前达梦数据库的兼容性
+		// return "smallint"
 	case schema.Int, schema.Uint:
 		size := field.Size
 		if field.DataType == schema.Uint {
@@ -366,6 +368,33 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			// 不添加 RETURNING 子句，因为 Panwei 数据库不支持在 INSERT ON DUPLICATE KEY UPDATE 语句中使用 RETURNING 子句
 			// 而是在 replaceCreateCallback 函数中通过额外的 SELECT 语句获取自增 ID
 		},
+
+		"SELECT": func(c clause.Clause, builder clause.Builder) {
+			if values, ok := c.Expression.(clause.Select); ok && len(values.Columns) > 0 {
+				if stmt, ok := builder.(*gorm.Statement); ok {
+					if len(stmt.Selects) == 0 {
+						c.Build(builder)
+						return
+					}
+					// 循环 stmt.Selects 进行处理
+					for idx, selectStr := range stmt.Selects {
+						if strings.Contains(selectStr, "FLOOR(") && strings.Contains(selectStr, "AS ts") {
+							exprStr := ConvertFloorToCast(selectStr)
+							// 如果 idx == 0
+							if idx == 0 {
+								builder.WriteString("SELECT " + exprStr)
+							}
+						} else {
+							c.Build(builder)
+						}
+					}
+				} else {
+					c.Build(builder)
+				}
+			} else {
+				c.Build(builder)
+			}
+		},
 	}
 
 	// 合并 JSON 子句构建器
@@ -458,4 +487,41 @@ func extendCreateCallback(db *gorm.DB) {
 			}
 		}
 	})
+}
+
+// 匹配：FLOOR(字段/数字)*数字
+var floorPattern = regexp.MustCompile(`\bFLOOR\s*\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\/\s*\d+\s*\)\s*\*\s*\d+\b`)
+
+// ConvertFloorToCast 安全替换：只替换未被 CAST 包裹的表达式
+func ConvertFloorToCast(sql string) string {
+	// 先把所有已经是 CAST(...) 的内容标记为占位符，防止被二次替换
+	// 步骤1：替换已存在的 CAST(...) 为临时标记
+	castedRegex := regexp.MustCompile(`CAST\(.*?AS BIGINT\)`)
+	tempMap := make(map[string]string)
+	tempIndex := 0
+
+	// 保存已存在的CAST语句
+	sql = castedRegex.ReplaceAllStringFunc(sql, func(m string) string {
+		key := sprintfHelper("__CAST_PLACEHOLDER_%d__", tempIndex)
+		tempMap[key] = m
+		tempIndex++
+		return key
+	})
+
+	// 步骤2：替换所有 FLOOR 表达式
+	sql = floorPattern.ReplaceAllStringFunc(sql, func(m string) string {
+		return "CAST(" + m + " AS BIGINT)"
+	})
+
+	// 步骤3：还原占位符
+	for key, val := range tempMap {
+		sql = strings.ReplaceAll(sql, key, val)
+	}
+
+	return sql
+}
+
+// 辅助函数
+func sprintfHelper(format string, a ...interface{}) string {
+	return strings.ReplaceAll(format, "%d", fmt.Sprint(a[0]))
 }
