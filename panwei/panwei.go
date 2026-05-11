@@ -2,6 +2,7 @@ package panwei
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -395,6 +396,36 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 				c.Build(builder)
 			}
 		},
+		"VALUES": func(c clause.Clause, builder clause.Builder) {
+			if values, ok := c.Expression.(clause.Values); ok && len(values.Columns) > 0 {
+				if stmt, ok := builder.(*gorm.Statement); ok && stmt.Schema != nil {
+					// 遍历 stmt.Schema.Fields 找到 DataType json and GORMDataType 是 string ,的字段 放到map中
+					jsonFieldsMap := make(map[string]bool)
+					for _, field := range stmt.Schema.Fields {
+						if field.DataType == "json" && field.GORMDataType == "string" {
+							jsonFieldsMap[field.DBName] = true
+						}
+					}
+
+					// 在构建 VALUES 子句时，如果字段在 map 中，则使用 “replaceQuotesInJSONValues” 函数包装该字段的值
+					for i, column := range values.Columns {
+						if jsonFieldsMap[column.Name] {
+							for j, row := range values.Values {
+								if i < len(row) {
+									if str, ok := row[i].(string); ok {
+										if jsonStr, err := replaceQuotesInJSONValues(str); err == nil {
+											values.Values[j][i] = jsonStr
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+			}
+			c.Build(builder)
+		},
 	}
 
 	// 合并 JSON 子句构建器
@@ -490,6 +521,7 @@ func extendCreateCallback(db *gorm.DB) {
 				}
 			}
 		}
+
 	})
 }
 
@@ -528,4 +560,39 @@ func ConvertFloorToCast(sql string) string {
 // 辅助函数
 func sprintfHelper(format string, a ...interface{}) string {
 	return strings.ReplaceAll(format, "%d", fmt.Sprint(a[0]))
+}
+
+func replaceQuotesInJSONValues(rawJSON string) (string, error) {
+	var data interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &data); err != nil {
+		return "", err
+	}
+
+	// 递归处理
+	processValue(&data)
+
+	// 重新编码为 JSON
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(bytes), nil
+}
+
+// 递归地将所有字符串中的 " 替换为 \"
+func processValue(v *interface{}) {
+	switch val := (*v).(type) {
+	case map[string]interface{}:
+		for k, v2 := range val {
+			processValue(&v2)
+			val[k] = v2
+		}
+	case []interface{}:
+		for i, v2 := range val {
+			processValue(&v2)
+			val[i] = v2
+		}
+	case string:
+		*v = strings.ReplaceAll(val, `"`, `\"`)
+	}
 }
