@@ -402,9 +402,20 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 					// 遍历 stmt.Schema.Fields 找到 DataType json and GORMDataType 是 string ,的字段 放到map中
 					jsonFieldsMap := make(map[string]bool)
 					for _, field := range stmt.Schema.Fields {
-						if field.DataType == "json" && field.GORMDataType == "string" {
+						if (field.DataType == "json") || (field.DataType == "jsonb") {
 							jsonFieldsMap[field.DBName] = true
 						}
+						// else {
+						// 	// serializer:json grom 这种场景也要兼容 用 field.TagSettings 来判断
+						// 	if tag, ok := field.TagSettings["SERIALIZER"]; ok && strings.ToLower(tag) == "json" {
+						// 		jsonFieldsMap[field.DBName] = true
+						// 	}
+						// 	// 用 Serializer 这种场景也要兼容
+						// 	if tag, ok := field.TagSettings["SERIALIZER"]; ok && strings.ToLower(tag) == "jsonb" {
+						// 		jsonFieldsMap[field.DBName] = true
+						// 	}
+						// }
+
 					}
 
 					// 在构建 VALUES 子句时，如果字段在 map 中，则使用 “replaceQuotesInJSONValues” 函数包装该字段的值
@@ -412,11 +423,21 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 						if jsonFieldsMap[column.Name] {
 							for j, row := range values.Values {
 								if i < len(row) {
+									// 这里也要兼容 []byte 的情况，因为有时候 JSON 字段的值可能是 []byte 类型的 JSON 字符串
 									if str, ok := row[i].(string); ok {
 										if jsonStr, err := replaceQuotesInJSONValues(str); err == nil {
 											values.Values[j][i] = jsonStr
 										}
-									}
+									} else if str, ok := row[i].(fmt.Stringer); ok {
+										if jsonStr, err := replaceQuotesInJSONValues(str.String()); err == nil {
+											values.Values[j][i] = jsonStr
+											// fmt.Printf("---replaceQuotesInJSONValues ,字段: %s\n", column.Name)
+										}
+									} // else if bytes, ok := row[i].([]byte); ok {
+									// if jsonStr, err := replaceQuotesInJSONValues(string(bytes)); err == nil {
+									// 	values.Values[j][i] = jsonStr
+									// }
+									// }
 								}
 							}
 						}
@@ -576,7 +597,9 @@ func replaceQuotesInJSONValues(rawJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(bytes), nil
+	s := string(bytes)
+
+	return s, nil
 }
 
 // 递归地将所有字符串中的 " 替换为 \"
