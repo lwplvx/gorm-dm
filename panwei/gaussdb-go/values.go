@@ -21,7 +21,12 @@ func convertSimpleArgument(m *gaussdbtype.Map, arg any) (any, error) {
 	if buf == nil {
 		return nil, nil
 	}
-	return string(buf), nil
+	s := string(buf)
+
+	// 盘维数据库处理 json 字符串中的双引号转义问题
+	s = InterceptGaussdbArgumentVal(s)
+
+	return s, nil
 }
 
 func encodeCopyValue(m *gaussdbtype.Map, buf []byte, oid uint32, arg any) ([]byte, error) {

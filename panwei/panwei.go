@@ -8,9 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	// panweidbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
-	// "github.com/HuaweiCloudDeveloper/gaussdb-go/stdlib"
-
 	panweidbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
 	"github.com/lwplvx/gorm-dm/panwei/gaussdb-go/stdlib"
 
@@ -27,14 +24,12 @@ type Dialector struct {
 }
 
 type Config struct {
-	DriverName                   string
-	DSN                          string
-	WithoutQuotingCheck          bool
-	PreferSimpleProtocol         bool
-	WithoutReturning             bool
-	Conn                         gorm.ConnPool
-	WithoutSerializerJson        bool
-	WithoutSerializerJsonDefault bool
+	DriverName           string
+	DSN                  string
+	WithoutQuotingCheck  bool
+	PreferSimpleProtocol bool
+	WithoutReturning     bool
+	Conn                 gorm.ConnPool
 }
 
 var (
@@ -122,15 +117,9 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	}
 
 	// 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
-	extendCreateCallback(db)
+	ExtendCreateCallback(db)
 
-	// 注册 json_default = json 序列化器
-	if !dialector.WithoutSerializerJsonDefault {
-		schema.RegisterSerializer("json_default", JSONDefaultSerializer{})
-	}
-	if !dialector.WithoutSerializerJson {
-		schema.RegisterSerializer("json", JSONDefaultSerializer{})
-	}
+	RegisterDefaultSqlArgIntercepter()
 
 	return
 }
@@ -405,52 +394,6 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 				c.Build(builder)
 			}
 		},
-		"VALUES": func(c clause.Clause, builder clause.Builder) {
-			if values, ok := c.Expression.(clause.Values); ok && len(values.Columns) > 0 {
-				if stmt, ok := builder.(*gorm.Statement); ok && stmt.Schema != nil {
-					// 遍历 stmt.Schema.Fields 找到 DataType json and GORMDataType 是 string ,的字段 放到map中
-					jsonFieldsMap := make(map[string]bool)
-					for _, field := range stmt.Schema.Fields {
-						if (field.DataType == "json") || (field.DataType == "jsonb") {
-							jsonFieldsMap[field.DBName] = true
-						}
-						// else {
-						// 	// serializer:json grom 这种场景也要兼容 用 field.TagSettings 来判断
-						// 	if tag, ok := field.TagSettings["SERIALIZER"]; ok && strings.ToLower(tag) == "json" {
-						// 		jsonFieldsMap[field.DBName] = true
-						// 	}
-						// 	// 用 Serializer 这种场景也要兼容
-						// 	if tag, ok := field.TagSettings["SERIALIZER"]; ok && strings.ToLower(tag) == "jsonb" {
-						// 		jsonFieldsMap[field.DBName] = true
-						// 	}
-						// }
-
-					}
-
-					// 在构建 VALUES 子句时，如果字段在 map 中，则使用 “replaceQuotesInJSONValues” 函数包装该字段的值
-					for i, column := range values.Columns {
-						if jsonFieldsMap[column.Name] {
-							for j, row := range values.Values {
-								if i < len(row) {
-									// 这里也要兼容 []byte 的情况，因为有时候 JSON 字段的值可能是 []byte 类型的 JSON 字符串
-									if str, ok := row[i].(string); ok {
-										if jsonStr, err := replaceQuotesInJSONValues(str); err == nil {
-											values.Values[j][i] = jsonStr
-										}
-									} else if str, ok := row[i].(fmt.Stringer); ok {
-										if jsonStr, err := replaceQuotesInJSONValues(str.String()); err == nil {
-											values.Values[j][i] = jsonStr
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-
-			}
-			c.Build(builder)
-		},
 	}
 
 	// 合并 JSON 子句构建器
@@ -489,7 +432,7 @@ func isPrimaryOrUniqueKey(builder clause.Builder, name string) bool {
 }
 
 // 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
-func extendCreateCallback(db *gorm.DB) {
+func ExtendCreateCallback(db *gorm.DB) {
 	// 保存原始的 Create 回调函数
 	originalCreate := db.Callback().Create().Get("gorm:create")
 	if originalCreate == nil {
