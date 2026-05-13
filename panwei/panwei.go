@@ -2,7 +2,6 @@ package panwei
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -28,12 +27,14 @@ type Dialector struct {
 }
 
 type Config struct {
-	DriverName           string
-	DSN                  string
-	WithoutQuotingCheck  bool
-	PreferSimpleProtocol bool
-	WithoutReturning     bool
-	Conn                 gorm.ConnPool
+	DriverName                   string
+	DSN                          string
+	WithoutQuotingCheck          bool
+	PreferSimpleProtocol         bool
+	WithoutReturning             bool
+	Conn                         gorm.ConnPool
+	WithoutSerializerJson        bool
+	WithoutSerializerJsonDefault bool
 }
 
 var (
@@ -122,6 +123,14 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 
 	// 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
 	extendCreateCallback(db)
+
+	// 注册 json_default = json 序列化器
+	if !dialector.WithoutSerializerJsonDefault {
+		schema.RegisterSerializer("json_default", JSONDefaultSerializer{})
+	}
+	if !dialector.WithoutSerializerJson {
+		schema.RegisterSerializer("json", JSONDefaultSerializer{})
+	}
 
 	return
 }
@@ -431,13 +440,8 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 									} else if str, ok := row[i].(fmt.Stringer); ok {
 										if jsonStr, err := replaceQuotesInJSONValues(str.String()); err == nil {
 											values.Values[j][i] = jsonStr
-											// fmt.Printf("---replaceQuotesInJSONValues ,字段: %s\n", column.Name)
 										}
-									} // else if bytes, ok := row[i].([]byte); ok {
-									// if jsonStr, err := replaceQuotesInJSONValues(string(bytes)); err == nil {
-									// 	values.Values[j][i] = jsonStr
-									// }
-									// }
+									}
 								}
 							}
 						}
@@ -581,41 +585,4 @@ func ConvertFloorToCast(sql string) string {
 // 辅助函数
 func sprintfHelper(format string, a ...interface{}) string {
 	return strings.ReplaceAll(format, "%d", fmt.Sprint(a[0]))
-}
-
-func replaceQuotesInJSONValues(rawJSON string) (string, error) {
-	var data interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &data); err != nil {
-		return "", err
-	}
-
-	// 递归处理
-	processValue(&data)
-
-	// 重新编码为 JSON
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-	s := string(bytes)
-
-	return s, nil
-}
-
-// 递归地将所有字符串中的 " 替换为 \"
-func processValue(v *interface{}) {
-	switch val := (*v).(type) {
-	case map[string]interface{}:
-		for k, v2 := range val {
-			processValue(&v2)
-			val[k] = v2
-		}
-	case []interface{}:
-		for i, v2 := range val {
-			processValue(&v2)
-			val[i] = v2
-		}
-	case string:
-		*v = strings.ReplaceAll(val, `"`, `\"`)
-	}
 }
