@@ -375,17 +375,21 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 						c.Build(builder)
 						return
 					}
+					isFloor := false
 					// 循环 stmt.Selects 进行处理
 					for idx, selectStr := range stmt.Selects {
 						if strings.Contains(selectStr, "FLOOR(") && strings.Contains(selectStr, "AS ts") {
+
+							isFloor = true
 							exprStr := ConvertFloorToCast(selectStr)
 							// 如果 idx == 0
 							if idx == 0 {
 								builder.WriteString("SELECT " + exprStr)
 							}
-						} else {
-							c.Build(builder)
 						}
+					}
+					if !isFloor {
+						c.Build(builder)
 					}
 				} else {
 					c.Build(builder)
