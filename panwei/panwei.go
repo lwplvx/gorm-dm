@@ -110,6 +110,11 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		if err != nil {
 			return
 		}
+		// 打印 PreferSimpleProtocol 参数
+		fmt.Printf("参数 PreferSimple: %v\n", dialector.Config.PreferSimpleProtocol)
+
+		//  当前是兼容模式，一定要启用
+		dialector.Config.PreferSimpleProtocol = true
 		if dialector.Config.PreferSimpleProtocol {
 			// 代理/兼容场景 适合这种模式
 			config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
