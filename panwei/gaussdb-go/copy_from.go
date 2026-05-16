@@ -266,6 +266,10 @@ func (ct *copyFrom) buildCopyBuf(buf []byte, sd *gaussdbconn.StatementDescriptio
 // Even though enum types appear to be strings they still must be registered to use with CopyFrom. This can be done with
 // Conn.LoadType and gaussdbtype.Map.RegisterType.
 func (c *Conn) CopyFrom(ctx context.Context, tableName Identifier, columnNames []string, rowSrc CopyFromSource) (int64, error) {
+
+	// 硬赋值QueryExecModeSimpleProtocol
+	c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
+
 	ct := &copyFrom{
 		conn:          c,
 		tableName:     tableName,
@@ -274,6 +278,8 @@ func (c *Conn) CopyFrom(ctx context.Context, tableName Identifier, columnNames [
 		readerErrChan: make(chan error),
 		mode:          c.config.DefaultQueryExecMode,
 	}
+
+	fmt.Printf("打印 DefaultQueryExecMode 参数 6: %v\n", c.config.DefaultQueryExecMode)
 
 	return ct.run(ctx)
 }

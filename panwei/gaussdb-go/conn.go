@@ -475,7 +475,13 @@ func (c *Conn) Exec(ctx context.Context, sql string, arguments ...any) (gaussdbc
 }
 
 func (c *Conn) exec(ctx context.Context, sql string, arguments ...any) (commandTag gaussdbconn.CommandTag, err error) {
+	// 硬赋值QueryExecModeSimpleProtocol
+	c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
+
 	mode := c.config.DefaultQueryExecMode
+
+	fmt.Printf("打印 DefaultQueryExecMode 参数 5: %v\n", mode)
+
 	var queryRewriter QueryRewriter
 
 optionLoop:
@@ -740,7 +746,20 @@ func (c *Conn) Query(ctx context.Context, sql string, args ...any) (Rows, error)
 
 	var resultFormats QueryResultFormats
 	var resultFormatsByOID QueryResultFormatsByOID
+
+	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
+
+		fmt.Printf("打印 DefaultQueryExecMode 参数 7 sql: %v\n", sql)
+
+	}
+
+	// 硬赋值QueryExecModeSimpleProtocol
+	c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
+
 	mode := c.config.DefaultQueryExecMode
+
+	fmt.Printf("打印 DefaultQueryExecMode 参数 6: %v\n", mode)
+
 	var queryRewriter QueryRewriter
 
 optionLoop:
@@ -962,6 +981,8 @@ func (c *Conn) SendBatch(ctx context.Context, b *Batch) (br BatchResults) {
 		bi.SQL = sql
 		bi.Arguments = arguments
 	}
+	// 硬赋值QueryExecModeSimpleProtocol
+	c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
 
 	// TODO: changing mode per batch? Update Batch.Queue function comment when implemented
 	mode := c.config.DefaultQueryExecMode

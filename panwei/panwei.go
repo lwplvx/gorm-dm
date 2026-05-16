@@ -117,7 +117,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		dialector.Config.PreferSimpleProtocol = true
 		if dialector.Config.PreferSimpleProtocol {
 			// 代理/兼容场景 适合这种模式
-			config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
+			// config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
 		}
 		result := timeZoneMatcher.FindStringSubmatch(dialector.Config.DSN)
 		if len(result) > 2 {
