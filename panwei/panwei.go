@@ -24,12 +24,13 @@ type Dialector struct {
 }
 
 type Config struct {
-	DriverName           string
-	DSN                  string
-	WithoutQuotingCheck  bool
-	PreferSimpleProtocol bool
-	WithoutReturning     bool
-	Conn                 gorm.ConnPool
+	DriverName              string
+	DSN                     string
+	WithoutQuotingCheck     bool
+	PreferSimpleProtocol    bool
+	WithoutReturning        bool
+	Conn                    gorm.ConnPool
+	EnabledJsonArrayAsJsonb bool
 }
 
 var (
@@ -39,13 +40,22 @@ var (
 
 func Open(dsn string) gorm.Dialector {
 	config := &Config{DSN: dsn}
-	config.PreferSimpleProtocol = true
-	// config.WithoutReturning = true
-	return &Dialector{config}
+
+	SetDefaultConfig(config)
+	return &Dialector{Config: config}
 }
 
+// 配置变化时需要  Open New 两个函数都一起处理
 func New(config Config) gorm.Dialector {
+	SetDefaultConfig(&config)
 	return &Dialector{Config: &config}
+}
+
+// 配置变化时需要  Open New 两个函数都一起处理
+func SetDefaultConfig(config *Config) {
+	config.PreferSimpleProtocol = true
+	// 是否启用 强转jsonb 查询,默认不启用
+	enabledJsonArrayAsJsonb = config.EnabledJsonArrayAsJsonb
 }
 
 func (dialector Dialector) Name() string {

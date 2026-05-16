@@ -479,22 +479,34 @@ func (json *JSONArrayExpression) In(value interface{}, keys ...string) *JSONArra
 	return json
 }
 
+// 是否启用 强转jsonb 查询
+var enabledJsonArrayAsJsonb = false
+
 // Build implements clause.Expression
 func (json *JSONArrayExpression) Build(builder clause.Builder) {
+
 	if stmt, ok := builder.(*gorm.Statement); ok {
+
 		switch stmt.Dialector.Name() {
 		// case "mysql":
 		case "panwei":
 			switch {
 			case json.contains:
-				builder.WriteString("JSON_CONTAINS(" + stmt.Quote(json.column) + ",JSON_ARRAY(")
-				builder.AddVar(stmt, json.equalsValue)
-				builder.WriteByte(')')
-				if len(json.keys) > 0 {
-					builder.WriteByte(',')
-					builder.AddVar(stmt, jsonQueryJoin(json.keys))
+				if !enabledJsonArrayAsJsonb {
+
+					builder.WriteString("JSON_CONTAINS(" + stmt.Quote(json.column) + ",JSON_ARRAY(")
+					builder.AddVar(stmt, json.equalsValue)
+					builder.WriteByte(')')
+					if len(json.keys) > 0 {
+						builder.WriteByte(',')
+						builder.AddVar(stmt, jsonQueryJoin(json.keys))
+					}
+					builder.WriteByte(')')
+				} else {
+					// effect_labels::jsonb @> '["label9"]'::jsonb)
+					builder.WriteString(fmt.Sprintf("%v::jsonb @> '[\"%v\"]'::jsonb", json.column, json.equalsValue))
+
 				}
-				builder.WriteByte(')')
 			case json.in:
 				builder.WriteString("JSON_CONTAINS(JSON_ARRAY")
 				builder.AddVar(stmt, json.equalsValue)
@@ -565,7 +577,7 @@ func (json *JSONArrayExpression) Build(builder clause.Builder) {
 				builder.WriteString(" ? ")
 				builder.AddVar(stmt, json.equalsValue)
 			}
-		case "panwei-xxxx":
+		case "panwei-xxx":
 			switch {
 			case json.contains:
 				builder.WriteString(stmt.Quote(json.column))
