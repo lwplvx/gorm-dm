@@ -205,6 +205,8 @@ func ParseConfigWithOptions(connString string, options ParseConfigOptions) (*Con
 			return nil, fmt.Errorf("invalid default_query_exec_mode: %s", s)
 		}
 	}
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode 参数 1: %v\n", defaultQueryExecMode)
 
 	connConfig := &ConnConfig{
 		Config:                   *config,
@@ -506,6 +508,9 @@ optionLoop:
 		return c.execPrepared(ctx, sd, arguments)
 	}
 
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode 参数 3: %v\n", mode)
+
 	switch mode {
 	case QueryExecModeCacheStatement:
 		if c.statementCache == nil {
@@ -779,6 +784,9 @@ optionLoop:
 	c.eqb.reset()
 	rows := c.getRows(ctx, sql, args)
 
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode 参数 2: %v\n", mode)
+
 	var err error
 	sd, explicitPreparedStatement := c.preparedStatements[sql]
 	if sd != nil || mode == QueryExecModeCacheStatement || mode == QueryExecModeCacheDescribe || mode == QueryExecModeDescribeExec {
@@ -957,6 +965,13 @@ func (c *Conn) SendBatch(ctx context.Context, b *Batch) (br BatchResults) {
 
 	// TODO: changing mode per batch? Update Batch.Queue function comment when implemented
 	mode := c.config.DefaultQueryExecMode
+
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode  c.config.DefaultQueryExecMode 参数 04: %v\n", c.config.DefaultQueryExecMode)
+
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode 参数 4: %v\n", mode)
+
 	if mode == QueryExecModeSimpleProtocol {
 		return c.sendBatchQueryExecModeSimpleProtocol(ctx, b)
 	}

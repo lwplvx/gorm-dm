@@ -133,6 +133,9 @@ func (ct *copyFrom) run(ctx context.Context) (int64, error) {
 	}
 	quotedColumnNames := cbuf.String()
 
+	// 打印 DefaultQueryExecMode 参数
+	fmt.Printf("打印 DefaultQueryExecMode 参数 5: %v\n", ct.mode)
+
 	var sd *gaussdbconn.StatementDescription
 	switch ct.mode {
 	case QueryExecModeExec, QueryExecModeSimpleProtocol:
