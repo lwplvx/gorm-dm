@@ -24,13 +24,13 @@ type Dialector struct {
 }
 
 type Config struct {
-	DriverName              string
-	DSN                     string
-	WithoutQuotingCheck     bool
-	PreferSimpleProtocol    bool
-	WithoutReturning        bool
-	Conn                    gorm.ConnPool
-	EnabledJsonArrayAsJsonb bool
+	DriverName               string
+	DSN                      string
+	WithoutQuotingCheck      bool
+	PreferSimpleProtocol     bool
+	WithoutReturning         bool
+	Conn                     gorm.ConnPool
+	DisabledJsonArrayAsJsonb bool
 }
 
 var (
@@ -51,11 +51,18 @@ func New(config Config) gorm.Dialector {
 	return &Dialector{Config: &config}
 }
 
+// 是否启用 强转jsonb 查询, 默认启用
+var enabledJsonArrayAsJsonb = true
+
 // 配置变化时需要  Open New 两个函数都一起处理
 func SetDefaultConfig(config *Config) {
 	config.PreferSimpleProtocol = true
-	// 是否启用 强转jsonb 查询,默认不启用
-	enabledJsonArrayAsJsonb = config.EnabledJsonArrayAsJsonb
+
+	// 是否启用 强转jsonb 查询,默认启用
+	enabledJsonArrayAsJsonb = true
+	if config.DisabledJsonArrayAsJsonb {
+		enabledJsonArrayAsJsonb = false
+	}
 }
 
 func (dialector Dialector) Name() string {
@@ -110,15 +117,15 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		if err != nil {
 			return
 		}
-		// 打印 PreferSimpleProtocol 参数
-		fmt.Printf("参数 PreferSimple: %v\n", dialector.Config.PreferSimpleProtocol)
 
 		//  当前是兼容模式，一定要启用
 		dialector.Config.PreferSimpleProtocol = true
 		if dialector.Config.PreferSimpleProtocol {
 			// 代理/兼容场景 适合这种模式
-			// config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
+			config.DefaultQueryExecMode = panweidbgo.QueryExecModeSimpleProtocol
+			fmt.Printf("打印 DefaultQueryExecMode 参数 0: %v\n", config.DefaultQueryExecMode)
 		}
+
 		result := timeZoneMatcher.FindStringSubmatch(dialector.Config.DSN)
 		if len(result) > 2 {
 			config.RuntimeParams["timezone"] = result[2]

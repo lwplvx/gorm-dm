@@ -133,9 +133,6 @@ func (ct *copyFrom) run(ctx context.Context) (int64, error) {
 	}
 	quotedColumnNames := cbuf.String()
 
-	// 打印 DefaultQueryExecMode 参数
-	fmt.Printf("打印 DefaultQueryExecMode 参数 5: %v\n", ct.mode)
-
 	var sd *gaussdbconn.StatementDescription
 	switch ct.mode {
 	case QueryExecModeExec, QueryExecModeSimpleProtocol:
@@ -267,8 +264,12 @@ func (ct *copyFrom) buildCopyBuf(buf []byte, sd *gaussdbconn.StatementDescriptio
 // Conn.LoadType and gaussdbtype.Map.RegisterType.
 func (c *Conn) CopyFrom(ctx context.Context, tableName Identifier, columnNames []string, rowSrc CopyFromSource) (int64, error) {
 
-	// 硬赋值QueryExecModeSimpleProtocol
-	c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
+	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
+		fmt.Printf("打印 DefaultQueryExecMode 参数 10 : %v\n", c.config.DefaultQueryExecMode)
+		// 硬赋值QueryExecModeSimpleProtocol
+		c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
+		fmt.Printf("打印 DefaultQueryExecMode 参数 10.1 : %v\n", c.config.DefaultQueryExecMode)
+	}
 
 	ct := &copyFrom{
 		conn:          c,
@@ -278,8 +279,6 @@ func (c *Conn) CopyFrom(ctx context.Context, tableName Identifier, columnNames [
 		readerErrChan: make(chan error),
 		mode:          c.config.DefaultQueryExecMode,
 	}
-
-	fmt.Printf("打印 DefaultQueryExecMode 参数 6: %v\n", c.config.DefaultQueryExecMode)
 
 	return ct.run(ctx)
 }

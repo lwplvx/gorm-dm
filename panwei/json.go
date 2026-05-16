@@ -479,11 +479,12 @@ func (json *JSONArrayExpression) In(value interface{}, keys ...string) *JSONArra
 	return json
 }
 
-// 是否启用 强转jsonb 查询
-var enabledJsonArrayAsJsonb = false
-
 // Build implements clause.Expression
 func (json *JSONArrayExpression) Build(builder clause.Builder) {
+
+	if !enabledJsonArrayAsJsonb {
+		fmt.Printf("打印 enabledJsonArrayAsJsonb 参数 : %v\n", enabledJsonArrayAsJsonb)
+	}
 
 	if stmt, ok := builder.(*gorm.Statement); ok {
 
