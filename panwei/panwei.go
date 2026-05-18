@@ -457,6 +457,32 @@ func isPrimaryOrUniqueKey(builder clause.Builder, name string) bool {
 	return false
 }
 
+// GetJSONClauseBuilders 获取 JSON 相关的子句构建器
+func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
+	return map[string]func(clause.Clause, clause.Builder){
+		"WHERE": func(c clause.Clause, builder clause.Builder) {
+			if values, ok := c.Expression.(clause.Where); ok && len(values.Exprs) > 0 {
+				// 递归替换所有 datatypes.JSONArrayExpression 为 dameng.JSONArrayExpression
+				newExprs := make([]clause.Expression, len(values.Exprs))
+				for i, expr := range values.Exprs {
+					newExprs[i] = replaceJSONArrayExpressions(expr)
+				}
+				// 使用替换后的表达式构建 SQL
+				newWhere := clause.Where{Exprs: newExprs}
+				builder.WriteString(" WHERE ")
+				newWhere.Build(builder)
+				// 执行 SQL 替换
+				replaceMysqlSqlToPanWeiSql(builder)
+				return
+			}
+			// 默认处理
+			c.Build(builder)
+			// 执行 SQL 替换
+			replaceMysqlSqlToPanWeiSql(builder)
+		},
+	}
+}
+
 // 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
 func ExtendCreateCallback(db *gorm.DB) {
 	// 保存原始的 Create 回调函数
