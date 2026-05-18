@@ -1,11 +1,15 @@
 package panwei
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"unsafe"
 
+	panweidbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -107,11 +111,27 @@ func replaceMysqlSqlToPanWeiSql(builder clause.Builder) {
 	// 获取原始 SQL
 	originalSQL := stmt.SQL.String()
 
-	// 转换 JSON   JSON_VALUE 写法转换为正确的写法
+	// 转换 BINARY 写法转换为正确的写法
 	convertedSQL := ConvertBINARYToPanWeiSql(originalSQL)
 
-	// 转换 JSON   JSON_VALUE 写法转换为正确的写法
-	convertedSQL = ConvertJSONValueToPanWei(convertedSQL)
+	// 转换 JSON_VALUE 写法
+	convertedSQL, consumedVars := ConvertJSONValueToPanWei(convertedSQL, stmt)
+
+	// 转换 JSON_CONTAINS(JSON_OBJECT(...)) 写法
+	convertedSQL, consumedVars2 := ConvertJSONContainsToPanWei(convertedSQL, stmt)
+
+	// 转换 JSON_CONTAINS(col, $N) 裸参数写法
+	convertedSQL, consumedVars3 := ConvertJSONContainsParam(convertedSQL, stmt)
+
+	// 转换 JSON_CONTAINS(col, JSON_ARRAY($N)) 写法
+	convertedSQL, consumedVars4 := ConvertJSONContainsArray(convertedSQL, stmt)
+
+	allConsumedVars := append(consumedVars, consumedVars2...)
+	allConsumedVars = append(allConsumedVars, consumedVars3...)
+	allConsumedVars = append(allConsumedVars, consumedVars4...)
+	if len(allConsumedVars) > 0 {
+		removeConsumedVars(stmt, allConsumedVars)
+	}
 
 	// 如果转换后的 SQL 不同，更新它
 	if convertedSQL != originalSQL {
@@ -135,45 +155,40 @@ func ConvertBINARYToPanWeiSql(originalSQL string) string {
 	return convertedSQL
 }
 
-// ConvertJSONValueToPanWei 自动将 MySQL JSON_VALUE 转换为 盘维 JSON_CONTAINS(JSON_OBJECT)
+// ConvertJSONValueToPanWei 自动将 MySQL JSON_VALUE 转换为 盘维 col::jsonb @> 'json'::jsonb
 // 支持：AND / OR 条件
-func ConvertJSONValueToPanWei(sql string) string {
-	// 匹配单个 JSON_VALUE 条件：JSON_VALUE(col, '$.key') = 'value' 或 JSON_VALUE(col, '$.key') = $1
+func ConvertJSONValueToPanWei(sql string, stmt *gorm.Statement) (string, []int) {
 	jsonValueRegex := regexp.MustCompile(
 		`JSON_VALUE\s*\(\s*([^,]+?)\s*,(\s*'\$\.([^']+)')\s*\)\s*=\s*('([^']*)'|\$\d+)`,
 	)
 
-	// 先找出所有WHERE子句
 	whereRegex := regexp.MustCompile(`(WHERE\s+)(.*)`)
 	whereMatch := whereRegex.FindStringSubmatch(sql)
 	if len(whereMatch) < 3 {
-		return sql // 没有WHERE子句，直接返回
+		return sql, nil
 	}
 
 	originalWhere := whereMatch[2]
 	wherePrefix := whereMatch[1]
 
-	// 如果没有JSON条件，直接返回
 	if !jsonValueRegex.MatchString(originalWhere) {
-		return sql
+		return sql, nil
 	}
 
-	// 按OR分割条件组，OR的优先级低于AND
 	orGroups := regexp.MustCompile(`\s+(OR|or)\s+`).Split(originalWhere, -1)
 
 	var processedGroups []string
+	var allConsumedVars []int
+
 	for _, group := range orGroups {
 		group = strings.TrimSpace(group)
 		if group == "" {
 			continue
 		}
 
-		// 按AND分割当前组的条件，AND的优先级高于OR
-		// 这里要保留AND的原始大小写
 		andConditions := regexp.MustCompile(`\s+(AND|and)\s+`).Split(group, -1)
 		andOps := regexp.MustCompile(`\s+(AND|and)\s+`).FindAllString(group, -1)
 
-		// 收集当前组中的条件及其类型
 		type condition struct {
 			isJSON   bool
 			col      string
@@ -192,8 +207,8 @@ func ConvertJSONValueToPanWei(sql string) string {
 
 			if match := jsonValueRegex.FindStringSubmatch(condStr); match != nil {
 				col := strings.TrimSpace(match[1])
-				key := match[3] // 提取键名，不包含$和引号
-				val := match[4] // 提取值（可能是带引号的字符串或参数占位符）
+				key := match[3]
+				val := match[4]
 
 				conditions = append(conditions, condition{
 					isJSON:   true,
@@ -210,40 +225,20 @@ func ConvertJSONValueToPanWei(sql string) string {
 			}
 		}
 
-		// 处理当前OR组内的条件，将连续的JSON条件按列合并
 		var processedConditions []string
-		currentJSONGroup := make(map[string][]map[string]string) // col -> []{key, val}
+		currentJSONGroup := make(map[string][]map[string]string)
 		currentNonJSON := ""
 
 		for j, cond := range conditions {
 			if cond.isJSON {
-				// JSON条件，添加到当前组
 				currentJSONGroup[cond.col] = append(currentJSONGroup[cond.col], map[string]string{
 					"key": cond.key,
 					"val": cond.val,
 				})
 			} else {
-				// 非JSON条件，先处理之前的JSON组
 				if len(currentJSONGroup) > 0 {
-					var jsonParts []string
-					for col, kvPairs := range currentJSONGroup {
-						var kv []string
-						for _, kvp := range kvPairs {
-							key := `'` + kvp["key"] + `'`
-							val := kvp["val"]
-							// 检查值是否是参数占位符（以$开头）
-							if !strings.HasPrefix(val, "$") {
-								// 如果是字符串值，检查是否已经包含单引号
-								if !strings.HasPrefix(val, "'") {
-									val = `'` + val + `'`
-								}
-							}
-							kv = append(kv, key, val)
-						}
-						jsonObj := "JSON_OBJECT(" + strings.Join(kv, ", ") + ")"
-						jsonContains := "JSON_CONTAINS(" + col + ", " + jsonObj + ")"
-						jsonParts = append(jsonParts, jsonContains)
-					}
+					jsonParts, consumedVars := buildJSONBContainsParts(currentJSONGroup, stmt)
+					allConsumedVars = append(allConsumedVars, consumedVars...)
 					if currentNonJSON != "" {
 						processedConditions = append(processedConditions, currentNonJSON+
 							strings.Join(jsonParts, " AND "))
@@ -254,7 +249,6 @@ func ConvertJSONValueToPanWei(sql string) string {
 					currentNonJSON = ""
 				}
 
-				// 添加非JSON条件
 				if currentNonJSON != "" {
 					if j > 0 && len(andOps) >= j {
 						currentNonJSON += andOps[j-1]
@@ -265,27 +259,9 @@ func ConvertJSONValueToPanWei(sql string) string {
 				}
 			}
 
-			// 如果是最后一个条件，处理剩余的JSON组
 			if j == len(conditions)-1 && len(currentJSONGroup) > 0 {
-				var jsonParts []string
-				for col, kvPairs := range currentJSONGroup {
-					var kv []string
-					for _, kvp := range kvPairs {
-						key := `'` + kvp["key"] + `'`
-						val := kvp["val"]
-						// 检查值是否是参数占位符（以$开头）
-						if !strings.HasPrefix(val, "$") {
-							// 如果是字符串值，检查是否已经包含单引号
-							if !strings.HasPrefix(val, "'") {
-								val = `'` + val + `'`
-							}
-						}
-						kv = append(kv, key, val)
-					}
-					jsonObj := "JSON_OBJECT(" + strings.Join(kv, ", ") + ")"
-					jsonContains := "JSON_CONTAINS(" + col + ", " + jsonObj + ")"
-					jsonParts = append(jsonParts, jsonContains)
-				}
+				jsonParts, consumedVars := buildJSONBContainsParts(currentJSONGroup, stmt)
+				allConsumedVars = append(allConsumedVars, consumedVars...)
 
 				if currentNonJSON != "" {
 					if j > 0 && len(andOps) >= j {
@@ -299,12 +275,10 @@ func ConvertJSONValueToPanWei(sql string) string {
 			}
 		}
 
-		// 用原始的AND运算符连接当前OR组内的处理结果
 		if len(processedConditions) > 0 {
-			// 查找当前组中第一个AND运算符的大小写
 			andOp := " AND "
 			if len(andOps) > 0 {
-				andOp = andOps[0] // 使用第一个AND运算符的原始大小写
+				andOp = andOps[0]
 			}
 			processedGroups = append(processedGroups, strings.Join(processedConditions, andOp))
 		} else {
@@ -312,7 +286,6 @@ func ConvertJSONValueToPanWei(sql string) string {
 		}
 	}
 
-	// 用大写OR运算符连接所有OR组
 	newWhereClause := ""
 	for i, group := range processedGroups {
 		if i > 0 {
@@ -321,43 +294,220 @@ func ConvertJSONValueToPanWei(sql string) string {
 		newWhereClause += group
 	}
 
-	// 替换原SQL中的WHERE子句
-	return strings.Replace(sql, wherePrefix+originalWhere, wherePrefix+newWhereClause, 1)
+	return strings.Replace(sql, wherePrefix+originalWhere, wherePrefix+newWhereClause, 1), allConsumedVars
 }
 
-// // ConvertJSONValueToPanWei
-// func ConvertJSONValueToPanWei(originalSQL string) string {
-// 	// 1. 先处理所有 JSON_VALUE 条件，提取：列、key、值
-// 	// 匹配模式: JSON_VALUE(col, '$.key') = 'value'
-// 	re := regexp.MustCompile(`JSON_VALUE\s*\(\s*([^,]+?)\s*,\s*'\$\.([^']+)'\s*\)\s*=\s*'([^']*)'`)
+func varOffset(stmt *gorm.Statement) int {
+	if len(stmt.Vars) > 0 {
+		switch stmt.Vars[0].(type) {
+		case panweidbgo.QueryExecMode:
+			return 1
+		}
+	}
+	return 0
+}
 
-// 	// 存储提取出来的 key/value
-// 	var colName string
-// 	var kvPairs []string
+func buildJSONBContainsParts(jsonGroup map[string][]map[string]string, stmt *gorm.Statement) ([]string, []int) {
+	offset := varOffset(stmt)
+	var jsonParts []string
+	var consumedVars []int
 
-// 	// 先收集所有 key-value
-// 	re.ReplaceAllStringFunc(originalSQL, func(m string) string {
-// 		match := re.FindStringSubmatch(m)
-// 		if len(match) >= 4 {
-// 			colName = strings.TrimSpace(match[1])
-// 			key := match[2]
-// 			val := match[3]
-// 			kvPairs = append(kvPairs, `'`+key+`'`, `'`+val+`'`)
-// 		}
-// 		return m
-// 	})
+	for col, kvPairs := range jsonGroup {
+		jsonObj := make(map[string]string)
+		for _, kvp := range kvPairs {
+			key := kvp["key"]
+			val := kvp["val"]
 
-// 	// 如果没有匹配到 JSON_VALUE，直接返回原SQL
-// 	if colName == "" || len(kvPairs) == 0 {
-// 		return originalSQL
-// 	}
+			if strings.HasPrefix(val, "$") {
+				n, err := strconv.Atoi(val[1:])
+				if err == nil {
+					varIndex := n - 1 + offset
+					if varIndex < len(stmt.Vars) {
+						jsonObj[key] = fmt.Sprint(stmt.Vars[varIndex])
+						consumedVars = append(consumedVars, varIndex)
+					}
+				}
+			} else {
+				jsonObj[key] = strings.Trim(val, "'")
+			}
+		}
 
-// 	// 2. 构建 JSON_CONTAINS 语句
-// 	jsonObj := "JSON_OBJECT(" + strings.Join(kvPairs, ", ") + ")"
-// 	replaceStr := "JSON_CONTAINS(" + colName + ", " + jsonObj + ")"
+		jsonBytes, _ := json.Marshal(jsonObj)
+		jsonStr := strings.ReplaceAll(string(jsonBytes), "'", "''")
+		jsonParts = append(jsonParts, "JSON_CONTAINS(NULLIF("+col+", ''), '"+jsonStr+"')")
+	}
 
-// 	// 3. 替换整个 WHERE 条件
-// 	// 匹配：JSON_VALUE(...) AND JSON_VALUE(...)
-// 	fullRe := regexp.MustCompile(`JSON_VALUE\(.+?\)\s*=\s*'[^']*'\s*(?:AND\s*JSON_VALUE\(.+?\)\s*=\s*'[^']*')*`)
-// 	return fullRe.ReplaceAllString(originalSQL, replaceStr)
-// }
+	return jsonParts, consumedVars
+}
+
+func removeConsumedVars(stmt *gorm.Statement, consumedVars []int) {
+	seen := make(map[int]bool)
+	var uniqueVars []int
+	for _, v := range consumedVars {
+		if !seen[v] {
+			seen[v] = true
+			uniqueVars = append(uniqueVars, v)
+		}
+	}
+
+	for i := 0; i < len(uniqueVars); i++ {
+		for j := 0; j < len(uniqueVars)-1-i; j++ {
+			if uniqueVars[j] < uniqueVars[j+1] {
+				uniqueVars[j], uniqueVars[j+1] = uniqueVars[j+1], uniqueVars[j]
+			}
+		}
+	}
+
+	for _, idx := range uniqueVars {
+		if idx < len(stmt.Vars) {
+			stmt.Vars = append(stmt.Vars[:idx], stmt.Vars[idx+1:]...)
+		}
+	}
+}
+
+// 预编译正则表达式，性能更高
+var mysqlJSONContainsRegex = regexp.MustCompile(
+	`JSON_CONTAINS\s*\(\s*([^,]+?)\s*,\s*JSON_OBJECT\s*\(\s*(.+?)\s*\)\s*\)`,
+)
+
+// ConvertJSONContainsToPanWei 将 JSON_CONTAINS(col, JSON_OBJECT('k', $N, ...)) 转为内联 JSON
+func ConvertJSONContainsToPanWei(sql string, stmt *gorm.Statement) (string, []int) {
+	if sql == "" {
+		return sql, nil
+	}
+
+	matches := mysqlJSONContainsRegex.FindAllStringSubmatch(sql, -1)
+	if len(matches) == 0 {
+		return sql, nil
+	}
+
+	offset := varOffset(stmt)
+	var allConsumedVars []int
+	result := sql
+
+	kvRegex := regexp.MustCompile(`'([^']+)'\s*,\s*('([^']*)'|\$\d+)`)
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		col := strings.TrimSpace(match[1])
+		paramsStr := strings.TrimSpace(match[2])
+
+		kvMatches := kvRegex.FindAllStringSubmatch(paramsStr, -1)
+		jsonObj := make(map[string]string)
+
+		for _, kvm := range kvMatches {
+			key := kvm[1]
+			valStr := kvm[2]
+
+			if strings.HasPrefix(valStr, "$") {
+				n, err := strconv.Atoi(valStr[1:])
+				if err == nil {
+					varIndex := n - 1 + offset
+					if varIndex < len(stmt.Vars) {
+						jsonObj[key] = fmt.Sprint(stmt.Vars[varIndex])
+						allConsumedVars = append(allConsumedVars, varIndex)
+					}
+				}
+			} else {
+				jsonObj[key] = strings.Trim(valStr, "'")
+			}
+		}
+
+		jsonBytes, _ := json.Marshal(jsonObj)
+		jsonStr := strings.ReplaceAll(string(jsonBytes), "'", "''")
+		replacement := "JSON_CONTAINS(NULLIF(" + col + ", ''), '" + jsonStr + "')"
+
+		result = strings.Replace(result, match[0], replacement, 1)
+	}
+
+	return result, allConsumedVars
+}
+
+// ConvertJSONContainsArray 将 JSON_CONTAINS(col, JSON_ARRAY($N)) 转为内联 JSON 数组
+func ConvertJSONContainsArray(sql string, stmt *gorm.Statement) (string, []int) {
+	if sql == "" {
+		return sql, nil
+	}
+
+	containsArrayRegex := regexp.MustCompile(`JSON_CONTAINS\s*\(\s*([^,]+),\s*JSON_ARRAY\s*\(\s*(\$\d+)\s*\)\s*\)`)
+	matches := containsArrayRegex.FindAllStringSubmatch(sql, -1)
+	if len(matches) == 0 {
+		return sql, nil
+	}
+
+	offset := varOffset(stmt)
+	var allConsumedVars []int
+	result := sql
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		col := strings.TrimSpace(match[1])
+		paramStr := match[2]
+
+		n, err := strconv.Atoi(paramStr[1:])
+		if err != nil {
+			continue
+		}
+		varIndex := n - 1 + offset
+		if varIndex >= len(stmt.Vars) {
+			continue
+		}
+
+		val := fmt.Sprint(stmt.Vars[varIndex])
+		jsonArray := "[\"" + val + "\"]"
+		jsonArray = strings.ReplaceAll(jsonArray, "'", "''")
+		replacement := "JSON_CONTAINS(" + col + ", '" + jsonArray + "')"
+
+		result = strings.Replace(result, match[0], replacement, 1)
+		allConsumedVars = append(allConsumedVars, varIndex)
+	}
+
+	return result, allConsumedVars
+}
+
+// ConvertJSONContainsParam 将 JSON_CONTAINS(col_expr, $N) 裸参数转为内联值
+func ConvertJSONContainsParam(sql string, stmt *gorm.Statement) (string, []int) {
+	if sql == "" {
+		return sql, nil
+	}
+
+	containsParamRegex := regexp.MustCompile(`JSON_CONTAINS\s*\(\s*(.+?),\s*(\$\d+)\s*\)`)
+	matches := containsParamRegex.FindAllStringSubmatch(sql, -1)
+	if len(matches) == 0 {
+		return sql, nil
+	}
+
+	offset := varOffset(stmt)
+	var allConsumedVars []int
+	result := sql
+
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		col := strings.TrimSpace(match[1])
+		paramStr := match[2]
+
+		n, err := strconv.Atoi(paramStr[1:])
+		if err != nil {
+			continue
+		}
+		varIndex := n - 1 + offset
+		if varIndex >= len(stmt.Vars) {
+			continue
+		}
+
+		val := fmt.Sprint(stmt.Vars[varIndex])
+		val = strings.ReplaceAll(val, "'", "''")
+		replacement := "JSON_CONTAINS(" + col + ", '" + val + "')"
+
+		result = strings.Replace(result, match[0], replacement, 1)
+		allConsumedVars = append(allConsumedVars, varIndex)
+	}
+
+	return result, allConsumedVars
+}

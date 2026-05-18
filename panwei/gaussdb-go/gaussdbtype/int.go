@@ -132,6 +132,8 @@ func (Int2Codec) PlanEncode(m *Map, oid uint32, format int16, value any) EncodeP
 	switch format {
 	case BinaryFormatCode:
 		switch value.(type) {
+		case bool:
+			return encodePlanInt2CodecBinaryBool{}
 		case int16:
 			return encodePlanInt2CodecBinaryInt16{}
 		case Int64Valuer:
@@ -139,6 +141,8 @@ func (Int2Codec) PlanEncode(m *Map, oid uint32, format int16, value any) EncodeP
 		}
 	case TextFormatCode:
 		switch value.(type) {
+		case bool:
+			return encodePlanInt2CodecTextBool{}
 		case int16:
 			return encodePlanInt2CodecTextInt16{}
 		case Int64Valuer:
@@ -147,6 +151,24 @@ func (Int2Codec) PlanEncode(m *Map, oid uint32, format int16, value any) EncodeP
 	}
 
 	return nil
+}
+
+type encodePlanInt2CodecBinaryBool struct{}
+
+func (encodePlanInt2CodecBinaryBool) Encode(value any, buf []byte) (newBuf []byte, err error) {
+	if value.(bool) {
+		return gaussdbio.AppendInt16(buf, 1), nil
+	}
+	return gaussdbio.AppendInt16(buf, 0), nil
+}
+
+type encodePlanInt2CodecTextBool struct{}
+
+func (encodePlanInt2CodecTextBool) Encode(value any, buf []byte) (newBuf []byte, err error) {
+	if value.(bool) {
+		return append(buf, '1'), nil
+	}
+	return append(buf, '0'), nil
 }
 
 type encodePlanInt2CodecBinaryInt16 struct{}

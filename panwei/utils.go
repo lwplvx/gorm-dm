@@ -2,7 +2,6 @@ package panwei
 
 import (
 	"encoding/json"
-	"strings"
 )
 
 func replaceQuotesInJSONValues(rawJSON string) (string, error) {
@@ -11,33 +10,10 @@ func replaceQuotesInJSONValues(rawJSON string) (string, error) {
 		return "", err
 	}
 
-	// 递归处理
-	processValue(&data)
-
-	// 重新编码为 JSON
+	// 重新编码为 JSON，让 json.Marshal 自动处理转义
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		return "", err
 	}
-	s := string(bytes)
-
-	return s, nil
-}
-
-// 递归地将所有字符串中的 " 替换为 \"
-func processValue(v *interface{}) {
-	switch val := (*v).(type) {
-	case map[string]interface{}:
-		for k, v2 := range val {
-			processValue(&v2)
-			val[k] = v2
-		}
-	case []interface{}:
-		for i, v2 := range val {
-			processValue(&v2)
-			val[i] = v2
-		}
-	case string:
-		*v = strings.ReplaceAll(val, `"`, `\"`)
-	}
+	return string(bytes), nil
 }

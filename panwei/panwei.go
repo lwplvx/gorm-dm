@@ -233,9 +233,7 @@ func (dialector Dialector) Explain(sql string, vars ...interface{}) string {
 func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
-		return "boolean"
-		//  使用 smallint 替代,保证业务之前达梦数据库的兼容性
-		// return "smallint"
+		return "smallint"
 	case schema.Int, schema.Uint:
 		size := field.Size
 		if field.DataType == schema.Uint {

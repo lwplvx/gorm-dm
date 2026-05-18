@@ -265,7 +265,7 @@ func (ct *copyFrom) buildCopyBuf(buf []byte, sd *gaussdbconn.StatementDescriptio
 func (c *Conn) CopyFrom(ctx context.Context, tableName Identifier, columnNames []string, rowSrc CopyFromSource) (int64, error) {
 
 	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
-		fmt.Printf("打印 DefaultQueryExecMode 参数 10 : %v\n", c.config.DefaultQueryExecMode)
+		// fmt.Printf("打印 DefaultQueryExecMode 参数 10 : %v\n", c.config.DefaultQueryExecMode)
 		// 硬赋值QueryExecModeSimpleProtocol
 		c.config.DefaultQueryExecMode = QueryExecModeSimpleProtocol
 		fmt.Printf("打印 DefaultQueryExecMode 参数 10.1 : %v\n", c.config.DefaultQueryExecMode)

@@ -483,7 +483,7 @@ func (c *Conn) Exec(ctx context.Context, sql string, arguments ...any) (gaussdbc
 func (c *Conn) exec(ctx context.Context, sql string, arguments ...any) (commandTag gaussdbconn.CommandTag, err error) {
 
 	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
-		fmt.Printf("打印 DefaultQueryExecMode 参数 8 sql: %v\n", sql)
+		// fmt.Printf("打印 DefaultQueryExecMode 参数 8 sql: %v\n", sql)
 
 		fmt.Printf("打印 DefaultQueryExecMode 参数 8 : %v\n", c.config.DefaultQueryExecMode)
 		// 硬赋值QueryExecModeSimpleProtocol
@@ -756,7 +756,7 @@ func (c *Conn) Query(ctx context.Context, sql string, args ...any) (Rows, error)
 	var resultFormatsByOID QueryResultFormatsByOID
 
 	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
-		fmt.Printf("打印 DefaultQueryExecMode 参数 7 sql: %v\n", sql)
+		// fmt.Printf("打印 DefaultQueryExecMode 参数 7 sql: %v\n", sql)
 
 		fmt.Printf("打印 DefaultQueryExecMode 参数 7 : %v\n", c.config.DefaultQueryExecMode)
 		// 硬赋值QueryExecModeSimpleProtocol
@@ -985,7 +985,7 @@ func (c *Conn) SendBatch(ctx context.Context, b *Batch) (br BatchResults) {
 		bi.Arguments = arguments
 	}
 	if c.config.DefaultQueryExecMode != QueryExecModeSimpleProtocol {
-		fmt.Printf("打印 DefaultQueryExecMode 参数 9 sqls: %v\n", b.QueuedQueries)
+		// fmt.Printf("打印 DefaultQueryExecMode 参数 9 sqls: %v\n", b.QueuedQueries)
 
 		fmt.Printf("打印 DefaultQueryExecMode 参数 9.1 : %v\n", c.config.DefaultQueryExecMode)
 		// 硬赋值QueryExecModeSimpleProtocol
