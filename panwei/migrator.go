@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	gaussdbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
+	gaussdbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	gaussdbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
+	gaussdbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package panwei
 import (
 	"encoding/json"
 
-	"github.com/HuaweiCloudDeveloper/gaussdb-go/gaussdbconn"
+	"github.com/lwplvx/gorm-dm/panwei/gaussdb-go/gaussdbconn"
 
 	"gorm.io/gorm"
 )

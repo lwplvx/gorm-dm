@@ -9,8 +9,8 @@ import (
 	"net"
 	"time"
 
-	gaussdbgo "github.com/HuaweiCloudDeveloper/gaussdb-go"
 	"github.com/google/uuid"
+	gaussdbgo "github.com/lwplvx/gorm-dm/panwei/gaussdb-go"
 	"github.com/lwplvx/gorm-dm/panwei/gaussdb-go/gaussdbtype"
 )
 
