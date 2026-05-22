@@ -30,7 +30,10 @@ func InterceptSqlArgumentVal(s string) string {
 		// println("[PANWEI] --1--替换前的 Value: " + s)
 
 		// 这里对json 进行处理， 替换 \" 为 \\\"
-		s = strings.ReplaceAll(s, "\"", "\\\"")
+		// s = strings.ReplaceAll(s, "\"", "\\\"")
+
+		//这里处理转义 用来把字符串转义成 能原样保存的样子
+		s = strings.ReplaceAll(s, "\\", "\\\\")
 
 		// 根据日志级别进行日志输出， 这里假设日志级别为 Info
 		// println("[PANWEI]  ---2---替换后的 Value: " + s)
