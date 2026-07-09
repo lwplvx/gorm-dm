@@ -31,11 +31,18 @@ type Config struct {
 	WithoutReturning         bool
 	Conn                     gorm.ConnPool
 	DisabledJsonArrayAsJsonb bool
+	BatchIDBackfillStrategy  string // 批次 ID 回填策略：maxid / fieldquery（默认 fieldquery）
 }
 
 var (
 	timeZoneMatcher         = regexp.MustCompile("(time_zone|TimeZone)=(.*?)($|&| )")
 	defaultIdentifierLength = 63 //maximum identifier length for gaussdb
+)
+
+// 批量 INSERT 后 ID 回填策略（解决 ON CONFLICT + 无 RETURNING 时的 ID 获取问题）
+const (
+	BatchIDBackfillMaxID      = "maxid"      // 方向1: SELECT MAX(id) 反算批次 ID（性能好，依赖 ID 连续）
+	BatchIDBackfillFieldQuery = "fieldquery" // 方向2: 按非主键字段逐条回查（更鲁棒，每元素多一次查询）
 )
 
 func Open(dsn string) gorm.Dialector {
@@ -57,6 +64,11 @@ var enabledJsonArrayAsJsonb = true
 // 配置变化时需要  Open New 两个函数都一起处理
 func SetDefaultConfig(config *Config) {
 	config.PreferSimpleProtocol = true
+
+	// 默认使用 fieldquery 策略（更鲁棒）
+	if config.BatchIDBackfillStrategy == "" {
+		config.BatchIDBackfillStrategy = BatchIDBackfillFieldQuery
+	}
 
 	// 是否启用 强转jsonb 查询,默认启用
 	enabledJsonArrayAsJsonb = true
@@ -139,7 +151,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	}
 
 	// 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
-	ExtendCreateCallback(db)
+	ExtendCreateCallback(db, dialector.Config.BatchIDBackfillStrategy)
 
 	RegisterDefaultSqlArgIntercepter()
 
@@ -482,7 +494,7 @@ func GetJSONClauseBuilders() map[string]func(clause.Clause, clause.Builder) {
 }
 
 // 替换默认的 Create 回调函数，支持 INSERT ON DUPLICATE KEY UPDATE 后获取自增 ID
-func ExtendCreateCallback(db *gorm.DB) {
+func ExtendCreateCallback(db *gorm.DB, strategy string) {
 	// 保存原始的 Create 回调函数
 	originalCreate := db.Callback().Create().Get("gorm:create")
 	if originalCreate == nil {
@@ -508,7 +520,6 @@ func ExtendCreateCallback(db *gorm.DB) {
 				var id interface{}
 
 				queryBuilder := strings.Builder{}
-				// merge into
 				if db.Statement.Schema.PrioritizedPrimaryField != nil && db.Statement.Schema.PrioritizedPrimaryField.AutoIncrement {
 					queryBuilder.WriteString("SELECT ")
 					queryBuilder.WriteString(db.Statement.Quote(db.Statement.Schema.PrioritizedPrimaryField.DBName))
@@ -523,13 +534,18 @@ func ExtendCreateCallback(db *gorm.DB) {
 				// 直接使用 ConnPool 执行查询，避免参数复用问题
 				if err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, query).Scan(&id); err == nil {
 					// 将获取到的 ID 回填到结构体中
-					// 修复：判断不是切片/数组，才执行主键ID赋值
-					// 切片是关联数据，没有主键ID，必须跳过
 					if field := db.Statement.Schema.PrioritizedPrimaryField; field != nil && db.Statement.ReflectValue.IsValid() {
-						// 修复：跳过切片、数组，避免 panic
 						kind := db.Statement.ReflectValue.Kind()
-						if kind != reflect.Slice && kind != reflect.Array {
-							// 获取可寻址的元素
+						if kind == reflect.Slice || kind == reflect.Array {
+							// 根据策略选择回填方式
+							switch strategy {
+							case BatchIDBackfillMaxID:
+								backfillBatchIDsByMaxID(db, field, id)
+							default:
+								backfillBatchIDsByFields(db, field)
+							}
+						} else {
+							// 单条 INSERT：直接回填
 							rv := db.Statement.ReflectValue
 							if rv.CanAddr() { // 必须可寻址才能 Set
 								field.Set(db.Statement.Context, rv, id)
@@ -541,6 +557,88 @@ func ExtendCreateCallback(db *gorm.DB) {
 		}
 
 	})
+}
+
+// backfillBatchIDsByMaxID 方向1：从 SELECT MAX(id) 结果反算批次内各记录的 ID
+// 性能好（只需一次额外查询），但要求批次内 ID 连续且全部为新插入。
+func backfillBatchIDsByMaxID(db *gorm.DB, pkField *schema.Field, maxID interface{}) {
+	length := db.Statement.ReflectValue.Len()
+	if length == 0 {
+		return
+	}
+	// 将 maxID 转为 int64
+	var maxVal int64
+	switch v := maxID.(type) {
+	case int64:
+		maxVal = v
+	case float64:
+		maxVal = int64(v)
+	case int:
+		maxVal = int64(v)
+	default:
+		return
+	}
+	if maxVal < int64(length) {
+		return
+	}
+	// firstID = maxID - len + 1, 然后依次赋值
+	firstID := uint(maxVal) - uint(length) + 1
+	for i := 0; i < length; i++ {
+		elem := db.Statement.ReflectValue.Index(i)
+		if elem.CanAddr() {
+			pkField.Set(db.Statement.Context, elem, firstID+uint(i))
+		}
+	}
+}
+
+// backfillBatchIDsByFields 方向2：批量 INSERT 后按字段回查各记录的 ID
+// 遍历切片中每个元素，用非主键字段值构建 WHERE，从数据库查出实际 ID 并回填。
+// 不受 ON CONFLICT DO NOTHING 影响（已存在记录也能查出正确 ID）。
+func backfillBatchIDsByFields(db *gorm.DB, pkField *schema.Field) {
+	schema := db.Statement.Schema
+	if schema == nil {
+		return
+	}
+	length := db.Statement.ReflectValue.Len()
+
+	for i := 0; i < length; i++ {
+		elem := db.Statement.ReflectValue.Index(i)
+		if !elem.CanAddr() {
+			continue
+		}
+		// 用非主键、非自增的可读字段构建 WHERE 条件
+		var conds []string
+		var vals []interface{}
+		paramIdx := 1
+		for _, f := range schema.Fields {
+			if f.PrimaryKey || f.AutoIncrement || !f.Readable {
+				continue
+			}
+			fv, isZero := f.ValueOf(db.Statement.Context, elem)
+			if isZero {
+				continue
+			}
+			conds = append(conds, fmt.Sprintf("%s = $%d",
+				db.Statement.Quote(f.DBName), paramIdx))
+			vals = append(vals, fv)
+			paramIdx++
+		}
+		if len(conds) == 0 {
+			continue
+		}
+
+		// SELECT "id" FROM "languages" WHERE "name" = $1 LIMIT 1
+		q := fmt.Sprintf("SELECT %s FROM %s WHERE %s LIMIT 1",
+			db.Statement.Quote(pkField.DBName),
+			db.Statement.Quote(schema.Table),
+			strings.Join(conds, " AND "))
+
+		var id interface{}
+		if err := db.Statement.ConnPool.QueryRowContext(db.Statement.Context, q, vals...).Scan(&id); err != nil {
+			continue // 查询失败保持 ID=0，与原始跳过行为一致
+		}
+		pkField.Set(db.Statement.Context, elem, id)
+	}
 }
 
 // 匹配：FLOOR(字段/数字)*数字
