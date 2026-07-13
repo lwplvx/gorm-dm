@@ -342,7 +342,7 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			stmt := builder.(*gorm.Statement)
 			for _, cl := range stmt.Clauses {
 				if cl.Name == "ON CONFLICT" {
-					// delete(stmt.Clauses, "RETURNING")
+					delete(stmt.Clauses, "RETURNING")
 					return
 				}
 			}
