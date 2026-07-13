@@ -335,10 +335,14 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	clauseBuilders := map[string]clause.ClauseBuilder{
 		"RETURNING": func(c clause.Clause, builder clause.Builder) {
 			// 检查是否是 INSERT ON DUPLICATE KEY UPDATE 语句
-			// 如果是，我们已经在 ClauseOnConflict 中处理了 ID 获取，所以这里直接返回
+			// 如果是，已在 ClauseOnConflict 中处理了 ID 获取
+			// 需要同时从 Clauses 中移除 RETURNING 子句，否则 hasReturning() 误判为 true
+			// 导致 GORM 标准 Create 回调走 QueryContext 路径而不是 ExecContext 路径，
+			// 进而导致 LastInsertId() 不可用、ExtendCreateCallback 的 ID 回填被跳过。
 			stmt := builder.(*gorm.Statement)
 			for _, cl := range stmt.Clauses {
 				if cl.Name == "ON CONFLICT" {
+					// delete(stmt.Clauses, "RETURNING")
 					return
 				}
 			}
@@ -559,38 +563,6 @@ func ExtendCreateCallback(db *gorm.DB, strategy string) {
 	})
 }
 
-// backfillBatchIDsByMaxID 方向1：从 SELECT MAX(id) 结果反算批次内各记录的 ID
-// 性能好（只需一次额外查询），但要求批次内 ID 连续且全部为新插入。
-func backfillBatchIDsByMaxID(db *gorm.DB, pkField *schema.Field, maxID interface{}) {
-	length := db.Statement.ReflectValue.Len()
-	if length == 0 {
-		return
-	}
-	// 将 maxID 转为 int64
-	var maxVal int64
-	switch v := maxID.(type) {
-	case int64:
-		maxVal = v
-	case float64:
-		maxVal = int64(v)
-	case int:
-		maxVal = int64(v)
-	default:
-		return
-	}
-	if maxVal < int64(length) {
-		return
-	}
-	// firstID = maxID - len + 1, 然后依次赋值
-	firstID := uint(maxVal) - uint(length) + 1
-	for i := 0; i < length; i++ {
-		elem := db.Statement.ReflectValue.Index(i)
-		if elem.CanAddr() {
-			pkField.Set(db.Statement.Context, elem, firstID+uint(i))
-		}
-	}
-}
-
 // backfillBatchIDsByFields 方向2：批量 INSERT 后按字段回查各记录的 ID
 // 遍历切片中每个元素，用非主键字段值构建 WHERE，从数据库查出实际 ID 并回填。
 // 不受 ON CONFLICT DO NOTHING 影响（已存在记录也能查出正确 ID）。
@@ -612,6 +584,10 @@ func backfillBatchIDsByFields(db *gorm.DB, pkField *schema.Field) {
 		paramIdx := 1
 		for _, f := range schema.Fields {
 			if f.PrimaryKey || f.AutoIncrement || !f.Readable {
+				continue
+			}
+			// 跳过关联字段（HasMany/HasOne/BelongsTo/Many2Many），它们不是数据库列
+			if f.DBName == "" {
 				continue
 			}
 			fv, isZero := f.ValueOf(db.Statement.Context, elem)
@@ -638,6 +614,41 @@ func backfillBatchIDsByFields(db *gorm.DB, pkField *schema.Field) {
 			continue // 查询失败保持 ID=0，与原始跳过行为一致
 		}
 		pkField.Set(db.Statement.Context, elem, id)
+	}
+}
+
+// backfillBatchIDsByMaxID 方向1：从 SELECT MAX(id) 结果反算批次内各记录的 ID
+// 性能好（只需一次额外查询），但要求批次内 ID 连续且全部为新插入。
+func backfillBatchIDsByMaxID(db *gorm.DB, pkField *schema.Field, maxID interface{}) {
+	length := db.Statement.ReflectValue.Len()
+	if length == 0 {
+		return
+	}
+	// 将 maxID 转为 int64
+	var maxVal int64
+	switch v := maxID.(type) {
+	case int64:
+		maxVal = v
+	case float64:
+		maxVal = int64(v)
+	case int:
+		maxVal = int64(v)
+	default:
+		fmt.Printf("[backfill-maxid] unexpected maxID type: %T, skipping\n", maxID)
+		return
+	}
+	if maxVal < int64(length) {
+		fmt.Printf("[backfill-maxid] maxVal %d < length %d, skipping\n", maxVal, length)
+		return
+	}
+	// firstID = maxID - len + 1, 然后依次赋值
+	firstID := uint(maxVal) - uint(length) + 1
+	fmt.Printf("[backfill-maxid] maxID=%d, len=%d, firstID=%d\n", maxVal, length, firstID)
+	for i := 0; i < length; i++ {
+		elem := db.Statement.ReflectValue.Index(i)
+		if elem.CanAddr() {
+			pkField.Set(db.Statement.Context, elem, firstID+uint(i))
+		}
 	}
 }
 
