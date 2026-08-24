@@ -85,6 +85,59 @@ func Create(db *gorm.DB) {
 					}
 				}
 
+				// 规范化 onConflict.Columns：达梦 MERGE 的 USING 别名仅含插入列，
+				// 若冲突列指向不在插入列中的列（典型：自增主键 id），ON 条件会引用
+				// 不存在的 excluded.xxx，达梦报错 -2207。此时回退到唯一索引列；
+				// 仍无可用列则回退普通 INSERT。
+				if len(onConflict.Columns) > 0 {
+					insertColumnSet := map[string]bool{}
+					for _, column := range values.Columns {
+						insertColumnSet[column.Name] = true
+					}
+
+					usable := make([]clause.Column, 0, len(onConflict.Columns))
+					for _, conflictColumn := range onConflict.Columns {
+						if insertColumnSet[conflictColumn.Name] {
+							usable = append(usable, conflictColumn)
+						}
+					}
+
+					if len(usable) > 0 {
+						// 保留在插入列中的冲突列
+						onConflict.Columns = usable
+					} else {
+						// 冲突列全部不在插入列（典型：自增主键 id）→ 回退到唯一索引列
+						// 作为 ON 条件。DoUpdates 与 DoNothing 均适用：
+						// 无可用列时 onConflict.Columns 保持为空，随后降级普通 INSERT。
+						uniqueIndexs := db.Statement.Schema.ParseIndexes()
+					outer:
+						for _, idx := range uniqueIndexs {
+							if len(idx.Fields) == 0 {
+								continue
+							}
+							for _, field := range idx.Fields {
+								if IsUniqueIndex(field) && insertColumnSet[field.DBName] {
+									usable = append(usable, clause.Column{Name: field.DBName})
+								}
+							}
+							if len(usable) > 0 {
+								break outer
+							}
+						}
+						onConflict.Columns = usable
+					}
+
+					if len(onConflict.Columns) == 0 {
+						// 无可用冲突列，无法构建 MERGE ON 条件，回退普通 INSERT
+						hasConflict = false
+					} else if !onConflict.DoNothing {
+						// 用户显式指定的冲突列中至少有一列在插入列中 → 具备 MERGE
+						// 冲突匹配条件，即使模型未声明唯一索引也走 MERGE（数据库实际
+						// 可能存在唯一约束，例如补建表时手工创建的 uniq_users_name）。
+						hasConflict = true
+					}
+				}
+
 			}
 
 			if hasConflict {
@@ -640,20 +693,23 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 			}
 			withoutOnColumns = append(withoutOnColumns, assignment)
 		}
-		onConflict.DoUpdates = clause.Set(withoutOnColumns)
-		if len(onConflict.DoUpdates) > 0 {
+
+		// 再排除出现在ON关联条件中的列（匹配上说明值已一致，达梦禁止重复更新）
+		// 若过滤后为空，则无需 WHEN MATCHED 子句（冲突时不更新，仅按需插入）
+		var updateColumns = make([]clause.Assignment, 0, len(withoutOnColumns))
+		for _, assignment := range withoutOnColumns {
+			if onConditionsColumns[assignment.Column.Name] {
+				continue
+			}
+			updateColumns = append(updateColumns, assignment)
+		}
+
+		if len(updateColumns) > 0 {
 			db.Statement.WriteString(" WHEN MATCHED THEN UPDATE SET ")
-			// onConflict.DoUpdates.Build(db.Statement)
 			// 自定义构建更新语句，确保列名都明确指定表名
-			// 变量，标记是否添加逗号
 			isAddComma := false
 
-			for _, assignment := range onConflict.DoUpdates {
-				// 列是匹配条件，匹配上说明值已经一样，达梦禁止重复更新
-				if onConditionsColumns[assignment.Column.Name] {
-					continue
-				}
-
+			for _, assignment := range updateColumns {
 				if isAddComma {
 					db.Statement.WriteByte(',')
 				}
@@ -666,7 +722,6 @@ func MergeCreate(db *gorm.DB, onConflict clause.OnConflict, values clause.Values
 				db.Statement.AddVar(db.Statement, assignment.Value)
 				isAddComma = true
 			}
-
 		}
 	}
 
