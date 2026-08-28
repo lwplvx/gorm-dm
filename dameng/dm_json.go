@@ -1,8 +1,11 @@
 package dameng
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"unsafe"
 
@@ -88,48 +91,112 @@ var mysqlJSONContainsRegex = regexp.MustCompile(
 	`JSON_CONTAINS\s*\(\s*([^,]+?)\s*,\s*JSON_OBJECT\s*\(\s*(.+?)\s*\)\s*\)`,
 )
 
+// 匹配 JSON_OBJECT 内的一组 key/value：'key', value，其中 value 可以是字面量 'xxx' 或占位符 ?
+var mysqlJSONKvRegex = regexp.MustCompile(`'([^']+)'\s*,\s*('([^']*)'|\?)`)
+
+// questionOrdinalBefore 统计 sql[0:pos] 区间内字符串字面量之外的 ? 占位符个数（含 pos 位置）。
+// 达梦方言所有绑定参数都写成 ?，因此第 N 个真实 ? 对应 stmt.Vars[N-1]。
+func questionOrdinalBefore(sql string, pos int) int {
+	n := 0
+	inStr := false
+	for i := 0; i <= pos && i < len(sql); i++ {
+		switch sql[i] {
+		case '\'':
+			inStr = !inStr
+		case '?':
+			if !inStr {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// removeConsumedVars 从 stmt.Vars 中移除已被内联到 SQL 的占位符对应参数（索引从大到小删，避免索引错位）。
+func removeConsumedVars(stmt *gorm.Statement, consumedVars []int) {
+	seen := make(map[int]bool)
+	var uniqueVars []int
+	for _, v := range consumedVars {
+		if !seen[v] {
+			seen[v] = true
+			uniqueVars = append(uniqueVars, v)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(uniqueVars)))
+	for _, idx := range uniqueVars {
+		if idx >= 0 && idx < len(stmt.Vars) {
+			stmt.Vars = append(stmt.Vars[:idx], stmt.Vars[idx+1:]...)
+		}
+	}
+}
+
 // 将 MySQL 的 JSON_CONTAINS + JSON_OBJECT 语法 转换为 达梦数据库兼容语法
 // 例如：
 // 输入: JSON_CONTAINS(col, JSON_OBJECT('Label', '50000000'))
 // 输出: JSON_CONTAINS(col, '{"Label":"50000000"}')
-func ConvertJSON_OBJECTToDamengSql(sql string) string {
-	if sql == "" {
-		return sql
+//
+// 关键点：JSON_OBJECT 内的值若为占位符 ?，必须把对应参数**内联**进 JSON 字符串，
+// 并返回被消费的参数下标（由调用方从 stmt.Vars 移除），否则 ? 会残留在 JSON 字符串
+// 字面量内，导致 SQL 真实占位符数量与参数数量不一致（报错 expected N arguments, got M
+// 或静默返回错误结果）。
+func ConvertJSON_OBJECTToDamengSql(sql string, stmt *gorm.Statement) (string, []int) {
+	if sql == "" || stmt == nil {
+		return sql, nil
 	}
-	// 替换所有匹配的 JSON_CONTAINS 表达式
-	return mysqlJSONContainsRegex.ReplaceAllStringFunc(sql, func(matchStr string) string {
-		// 提取分组：分组1=字段名，分组2=JSON_OBJECT内部的 key,value,key,value...
-		parts := mysqlJSONContainsRegex.FindStringSubmatch(matchStr)
-		if len(parts) < 3 {
-			return matchStr // 匹配失败，原样返回
-		}
 
-		field := strings.TrimSpace(parts[1])
-		paramsStr := strings.TrimSpace(parts[2])
+	matches := mysqlJSONContainsRegex.FindAllStringSubmatchIndex(sql, -1)
+	if len(matches) == 0 {
+		return sql, nil
+	}
 
-		// 按逗号分割参数
-		params := strings.Split(paramsStr, ",")
-		// 去除每个参数前后空格和引号
-		for i := range params {
-			params[i] = strings.TrimSpace(params[i])
-			params[i] = strings.Trim(params[i], `'"`) // 去掉单/双引号
-		}
+	var consumedVars []int
+	result := sql
 
-		// 组装成 {"key":"value", ...}
-		var jsonKV []string
-		for i := 0; i < len(params); i += 2 {
-			if i+1 >= len(params) {
-				break
+	// 从右到左替换，保证字节偏移在替换后仍然有效
+	for i := len(matches) - 1; i >= 0; i-- {
+		m := matches[i]
+		fullStart, fullEnd := m[0], m[1]
+		field := strings.TrimSpace(sql[m[2]:m[3]])
+		paramsStr := sql[m[4]:m[5]]
+
+		jsonObj := make(map[string]string)
+		var matchConsumed []int
+		resolvable := true
+
+		for _, km := range mysqlJSONKvRegex.FindAllStringSubmatchIndex(paramsStr, -1) {
+			key := paramsStr[km[2]:km[3]]
+			valStr := paramsStr[km[4]:km[5]]
+
+			if valStr == "?" {
+				// 占位符：确定它在整条 SQL 中是第几个 ?，映射到 stmt.Vars
+				globalPos := m[4] + km[4]
+				ordinal := questionOrdinalBefore(sql, globalPos)
+				varIndex := ordinal - 1
+				if varIndex < 0 || varIndex >= len(stmt.Vars) {
+					resolvable = false
+					break
+				}
+				jsonObj[key] = fmt.Sprint(stmt.Vars[varIndex])
+				matchConsumed = append(matchConsumed, varIndex)
+			} else {
+				// 字面量：去掉外层引号
+				jsonObj[key] = strings.Trim(valStr, "'")
 			}
-			key := params[i]
-			val := params[i+1]
-			jsonKV = append(jsonKV, `"`+key+`":"`+val+`"`)
 		}
-		jsonStr := "{" + strings.Join(jsonKV, ",") + "}"
 
-		// 返回达梦格式
-		return `JSON_CONTAINS(` + field + `, '` + jsonStr + `')`
-	})
+		if !resolvable || len(jsonObj) == 0 {
+			continue // 无法解析，保留原样，避免产生更坏的 SQL
+		}
+
+		jsonBytes, _ := json.Marshal(jsonObj)
+		jsonStr := strings.ReplaceAll(string(jsonBytes), "'", "''")
+		replacement := `JSON_CONTAINS(` + field + `, '` + jsonStr + `')`
+
+		result = result[:fullStart] + replacement + result[fullEnd:]
+		consumedVars = append(consumedVars, matchConsumed...)
+	}
+
+	return result, consumedVars
 }
 
 // 预编译正则
@@ -157,7 +224,12 @@ func replaceMysqlSqlToDMSql(builder clause.Builder) {
 	convertedSQL := ConvertMySQLQuotesToDamengSafe(originalSQL)
 
 	// 转换 JSON 函数
-	convertedSQL = ConvertJSON_OBJECTToDamengSql(convertedSQL)
+	convertedSQL, consumedVars := ConvertJSON_OBJECTToDamengSql(convertedSQL, stmt)
+	// JSON_OBJECT 内被内联的 ? 占位符对应的参数要从 stmt.Vars 中移除，
+	// 否则 SQL 占位符数量与参数数量不一致（生产报错 expected 2 arguments, got 3）。
+	if len(consumedVars) > 0 {
+		removeConsumedVars(stmt, consumedVars)
+	}
 
 	// 如果转换后的 SQL 不同，更新它
 	if convertedSQL != originalSQL {
