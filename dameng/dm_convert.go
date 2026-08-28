@@ -16,11 +16,12 @@ var (
 	hasSet = regexp.MustCompile(`\bSET\b`)
 
 	// ---------------------- 固定精准匹配 ----------------------
-	// 匹配：."version" = version + 1
-	regVersion = regexp.MustCompile(`(\."version"\s*=\s*)version\s*\+\s*1`)
+	// 匹配：."version" = version + 1（表名用 [^"]+ 兼容任意表名，$1=表限定的 LHS 列，$2=等号）
+	// 达梦 MERGE 的 UPDATE SET 中 RHS 列必须显式限定表名，非限定写法报错 -2112。
+	regVersion = regexp.MustCompile(`("[^"]+"\."version")(\s*=\s*)version\s*\+\s*1`)
 
 	// 匹配：."latest_version" = latest_version + 1
-	regLatestVersion = regexp.MustCompile(`(\."latest_version"\s*=\s*)latest_version\s*\+\s*1`)
+	regLatestVersion = regexp.MustCompile(`("[^"]+"\."latest_version")(\s*=\s*)latest_version\s*\+\s*1`)
 )
 
 // processFixedVersionSql 严格固定匹配：
@@ -36,11 +37,13 @@ func processFixedVersionSql(sql string) string {
 
 	// 打印原 SQL 语句
 	// fmt.Println("原 SQL :", sql)
-	// 替换 1：."version" = version + 1 → ."version" = "excluded"."version" + 1
-	sql = regVersion.ReplaceAllString(sql, `${1}"excluded"."version" + 1`)
+	// 替换 1：."version" = version + 1 → ."version" = "表名"."version" + 1
+	// 注意：RHS 必须限定为**目标表**列（当前库中值 + 1）。
+	// 早期错误地限定为 "excluded"."version"，导致结果恒为 插入值+1（最新版本不再递增）。
+	sql = regVersion.ReplaceAllString(sql, `${1}${2}${1} + 1`)
 
-	// 替换 2：."latest_version" = latest_version + 1 → ."latest_version" = "excluded"."latest_version"+ 1
-	sql = regLatestVersion.ReplaceAllString(sql, `${1}"excluded"."latest_version" + 1`)
+	// 替换 2：."latest_version" = latest_version + 1 → ."latest_version" = "表名"."latest_version" + 1
+	sql = regLatestVersion.ReplaceAllString(sql, `${1}${2}${1} + 1`)
 
 	// fmt.Println("新的 SQL :", sql)
 
