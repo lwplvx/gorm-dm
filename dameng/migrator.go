@@ -1,6 +1,7 @@
 package dameng
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -338,110 +339,143 @@ func (m Migrator) RenameColumn(value interface{}, oldName, newName string) error
 func (m Migrator) ColumnTypes(dst interface{}) ([]gorm.ColumnType, error) {
 	columnTypes := make([]gorm.ColumnType, 0)
 	execErr := m.RunWithValue(dst, func(stmt *gorm.Statement) error {
-		var (
-			currentDatabase = m.CurrentDatabase()
-			table           = stmt.Table
-			columnTypeSQL   = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, COLS.DEFVAL FROM
+		// 驱动级列元数据：只 SELECT 业务表，不需要系统字典权限。
+		rows, err := m.DB.Session(&gorm.Session{}).Table(stmt.Table).Limit(1).Rows()
+		if err != nil {
+			return err
+		}
+
+		rawColumnTypes, err := rows.ColumnTypes()
+		if closeErr := rows.Close(); closeErr != nil {
+			return closeErr
+		}
+		if err != nil {
+			return err
+		}
+
+		// 优先返回完整元数据：在驱动级列类型基础上，再查系统字典补默认值/主键/唯一约束。
+		// 普通业务账号通常无 SYS 系统字典表查询权限（报 -5504），此时降级为仅返回
+		// 驱动级列元数据（列名/类型/长度/可空等仍完整可用），保证只需要列名的场景不被阻塞。
+		if enhanced, dictErr := m.columnTypesWithDict(stmt, rawColumnTypes); dictErr == nil {
+			columnTypes = append(columnTypes, enhanced...)
+			return nil
+		} else {
+			m.DB.Logger.Warn(context.Background(), "[gorm-dm] ColumnTypes 查询系统字典失败，降级为仅驱动级列元数据: %v", dictErr)
+		}
+
+		for _, c := range rawColumnTypes {
+			columnTypes = append(columnTypes, migrator.ColumnType{
+				SQLColumnType: c,
+				NameValue:     sql.NullString{String: c.Name(), Valid: true},
+			})
+		}
+		return nil
+	})
+
+	return columnTypes, execErr
+}
+
+// columnTypesWithDict 通过达梦系统字典查询补全列的默认值/主键/唯一约束等元数据，
+// 返回的列顺序与数据库表定义一致。依赖 SYS 系统字典表查询权限（SYS.SYSOBJECTS 等），
+// 普通业务账号无权限时会返回错误，由 ColumnTypes 决定降级。
+func (m Migrator) columnTypesWithDict(stmt *gorm.Statement, rawColumnTypes []*sql.ColumnType) ([]gorm.ColumnType, error) {
+	var (
+		currentDatabase = m.CurrentDatabase()
+		table           = stmt.Table
+		columnTypeSQL   = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, COLS.DEFVAL FROM
 (SELECT ID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCH' AND NAME = ?) SCHS,
 (SELECT ID, SCHID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
 SYS.SYSCOLUMNS COLS
 WHERE TABS.ID=COLS.ID AND SCHS.ID = TABS.SCHID`
-			columnConsSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, LNNVL(CONS.TYPE$!='P'), LNNVL(CONS.TYPE$!='U') FROM
+		columnConsSQL = `SELECT /*+ MAX_OPT_N_TABLES(5) */ COLS.NAME, LNNVL(CONS.TYPE$!='P'), LNNVL(CONS.TYPE$!='U') FROM
 (SELECT ID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCH' AND NAME = ?) SCHS,
 (SELECT ID, SCHID FROM SYS.SYSOBJECTS WHERE TYPE$ = 'SCHOBJ' AND SUBTYPE$ IN ('UTAB', 'STAB', 'VIEW') AND NAME = ?) TABS,
 SYS.SYSCOLUMNS COLS,
 SYS.SYSCONS CONS,
 SYS.SYSINDEXES INDS
 WHERE SCHS.ID=TABS.SCHID AND TABS.ID=COLS.ID AND COLS.ID=CONS.TABLEID and CONS.INDEXID=INDS.ID and SF_COL_IS_IDX_KEY(INDS.KEYNUM, INDS.KEYINFO, COLS.COLID)=1`
-			consMap   = make(map[string][][]bool)
-			rows, err = m.DB.Session(&gorm.Session{}).Table(stmt.Table).Limit(1).Rows()
+		columnTypes = make([]gorm.ColumnType, 0)
+		consMap     = make(map[string][][]bool)
+	)
+
+	// 约束（主键/唯一）
+	cons, consErr := m.DB.Table(table).Raw(columnConsSQL, currentDatabase, table).Rows()
+	if consErr != nil {
+		return nil, consErr
+	}
+	defer cons.Close()
+
+	for cons.Next() {
+		var (
+			colName string
+			values  = make([]bool, 2)
+		)
+		if scanErr := cons.Scan(&colName, &values[0], &values[1]); scanErr != nil {
+			return nil, scanErr
+		}
+
+		if consMap[colName] == nil {
+			consMap[colName] = *new([][]bool)
+		}
+		consMap[colName] = append(consMap[colName], values)
+	}
+	if err := cons.Err(); err != nil {
+		return nil, err
+	}
+
+	// 列信息（列名 + 默认值）
+	columns, rowErr := m.DB.Table(table).Raw(columnTypeSQL, currentDatabase, table).Rows()
+	if rowErr != nil {
+		return nil, rowErr
+	}
+	defer columns.Close()
+
+	for columns.Next() {
+		var (
+			column migrator.ColumnType
+			values = []interface{}{
+				&column.NameValue, &column.DefaultValueValue,
+			}
 		)
 
-		if err != nil {
-			return err
+		if scanErr := columns.Scan(values...); scanErr != nil {
+			return nil, scanErr
 		}
 
-		rawColumnTypes, err := rows.ColumnTypes()
+		column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
 
-		if err := rows.Close(); err != nil {
-			return err
-		}
-
-		// 约束
-		cons, consErr := m.DB.Table(table).Raw(columnConsSQL, currentDatabase, table).Rows()
-		if consErr != nil {
-			return consErr
-		}
-		defer cons.Close()
-
-		for cons.Next() {
-			var (
-				colName string
-				values  = make([]bool, 2)
-			)
-			if scanErr := cons.Scan(&colName, &values[0], &values[1]); scanErr != nil {
-				return scanErr
-			}
-
-			if consMap[colName] == nil {
-				consMap[colName] = *new([][]bool)
-			}
-			consMap[colName] = append(consMap[colName], values)
-		}
-
-		// 列信息
-		columns, rowErr := m.DB.Table(table).Raw(columnTypeSQL, currentDatabase, table).Rows()
-		if rowErr != nil {
-			return rowErr
-		}
-		defer columns.Close()
-
-		for columns.Next() {
-			var (
-				column migrator.ColumnType
-				values = []interface{}{
-					&column.NameValue, &column.DefaultValueValue,
-				}
-			)
-
-			if scanErr := columns.Scan(values...); scanErr != nil {
-				return scanErr
-			}
-
-			column.DefaultValueValue.String = strings.Trim(column.DefaultValueValue.String, "'")
-
-			// 设置列的主键和值唯一信息
-			for key, value := range consMap {
-				if key == column.NameValue.String {
-					for _, con := range value {
-						if con[0] {
-							column.PrimaryKeyValue.Bool = true
-							column.PrimaryKeyValue.Valid = true
-						}
-						if con[1] {
-							column.UniqueValue.Bool = true
-							column.UniqueValue.Valid = true
-						}
+		// 设置列的主键和值唯一信息
+		for key, value := range consMap {
+			if key == column.NameValue.String {
+				for _, con := range value {
+					if con[0] {
+						column.PrimaryKeyValue.Bool = true
+						column.PrimaryKeyValue.Valid = true
 					}
-					break
+					if con[1] {
+						column.UniqueValue.Bool = true
+						column.UniqueValue.Valid = true
+					}
 				}
+				break
 			}
-
-			// 设置默认的列信息（来自go驱动标准类型sql.ColumnType）
-			for _, c := range rawColumnTypes {
-				if c.Name() == column.NameValue.String {
-					column.SQLColumnType = c
-					break
-				}
-			}
-
-			columnTypes = append(columnTypes, column)
 		}
 
-		return nil
-	})
+		// 设置默认的列信息（来自go驱动标准类型sql.ColumnType）
+		for _, c := range rawColumnTypes {
+			if c.Name() == column.NameValue.String {
+				column.SQLColumnType = c
+				break
+			}
+		}
 
-	return columnTypes, execErr
+		columnTypes = append(columnTypes, column)
+	}
+	if err := columns.Err(); err != nil {
+		return nil, err
+	}
+
+	return columnTypes, nil
 }
 
 func (m Migrator) CreateView(name string, option gorm.ViewOption) error {
